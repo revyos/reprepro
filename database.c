@@ -1007,11 +1007,11 @@ retvalue table_getrecord(struct table *table, const char *key, char **data_p, si
 	    ((const char*)Data.data)[Data.size-1] != '\0') {
 		if (table->subname != NULL)
 			fprintf(stderr,
-"Database %s(%s) returned corrupted (not null-terminated) data!",
+"Database %s(%s) returned corrupted (not null-terminated) data!\n",
 					table->name, table->subname);
 		else
 			fprintf(stderr,
-"Database %s returned corrupted (not null-terminated) data!",
+"Database %s returned corrupted (not null-terminated) data!\n",
 					table->name);
 		free(Data.data);
 		return RET_ERROR;
@@ -1095,11 +1095,11 @@ retvalue table_gettemprecord(struct table *table, const char *key, const char **
 	    ((const char*)Data.data)[Data.size-1] != '\0') {
 		if (table->subname != NULL)
 			fprintf(stderr,
-"Database %s(%s) returned corrupted (not null-terminated) data!",
+"Database %s(%s) returned corrupted (not null-terminated) data!\n",
 					table->name, table->subname);
 		else
 			fprintf(stderr,
-"Database %s returned corrupted (not null-terminated) data!",
+"Database %s returned corrupted (not null-terminated) data!\n",
 					table->name);
 		return RET_ERROR;
 	}
@@ -1346,11 +1346,11 @@ static inline retvalue parse_pair(struct table *table, DBT Key, DBT Data, /*@nul
 	if (separator == NULL) {
 		if (table->subname != NULL)
 			fprintf(stderr,
-"Database %s(%s) returned corrupted data!",
+"Database %s(%s) returned corrupted data!\n",
 					table->name, table->subname);
 		else
 			fprintf(stderr,
-"Database %s returned corrupted data!",
+"Database %s returned corrupted data!\n",
 					table->name);
 		return RET_ERROR;
 	}
