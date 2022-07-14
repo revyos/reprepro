@@ -3,6 +3,10 @@
 	Continue ceased upstream development
 
 	* ChangeLog: Add some missing entries
+	* NEWS: Mention major 5.3.1 work
+	* configure.ac: Release existing patches as 5.3.1
+	* configure.ac: Drop Bernhard's email as bug address;
+	Thanks for all the work making reprepro a stable repo tool!
 
 2021-06-18  Dimitri John Ledkov <dimitri.ledkov@canonical.com>
 	* Add Zstd support
