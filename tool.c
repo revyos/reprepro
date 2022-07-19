@@ -2035,7 +2035,7 @@ static retvalue updatechecksums(const char *changesfilename, struct changes *c, 
 
 		if (file->dsc == NULL) {
 			fprintf(stderr,
-"WARNING: Could not read '%s', hopeing the content and its checksums are correct!\n",
+"WARNING: Could not read '%s', hoping the content and its checksums are correct!\n",
 					file->basename);
 			continue;
 		}

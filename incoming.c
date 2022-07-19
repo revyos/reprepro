@@ -348,7 +348,7 @@ CFSETPROC(incoming, permit) {
 	else if (strcmp(i->name, d->name) != 0)
 		return config_getflags(iter, headername, permitconstants,
 				i->permit, true,
-" (but not within the rule we are intrested in.)");
+" (but not within the rule we are interested in.)");
 	else
 		return config_getflags(iter, headername, permitconstants,
 				i->permit, false,
@@ -379,7 +379,7 @@ CFSETPROC(incoming, cleanup) {
 	else if (strcmp(i->name, d->name) != 0)
 		return config_getflags(iter, headername, cleanupconstants,
 				i->cleanup, true,
-" (but not within the rule we are intrested in.)");
+" (but not within the rule we are interested in.)");
 	else
 		return config_getflags(iter, headername, cleanupconstants,
 				i->cleanup, false,
@@ -404,7 +404,7 @@ CFSETPROC(incoming, options) {
 	else if (strcmp(i->name, d->name) != 0)
 		return config_getflags(iter, headername, optionsconstants,
 				i->options, true,
-" (but not within the rule we are intrested in.)");
+" (but not within the rule we are interested in.)");
 	else
 		return config_getflags(iter, headername, optionsconstants,
 				i->options, false,

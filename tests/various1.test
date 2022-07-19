@@ -271,9 +271,9 @@ testrun - -b . processincoming default 3<<EOF
 returns 249
 stderr
 *=Warning: ignored error parsing config file ./conf/incoming, line 5, column 22:
-*=Unknown flag in Permit header. (but not within the rule we are intrested in.)
+*=Unknown flag in Permit header. (but not within the rule we are interested in.)
 *=Warning: ignored error parsing config file ./conf/incoming, line 6, column 23:
-*=Unknown flag in Cleanup header. (but not within the rule we are intrested in.)
+*=Unknown flag in Cleanup header. (but not within the rule we are interested in.)
 *=Error parsing config file ./conf/incoming, line 13:
 *=Required field 'IncomingDir' not found in
 *=incoming rule starting in line 11 and ending in line 12.
