@@ -352,30 +352,34 @@ The program has to accept the compressed file as stdin and write
 the uncompressed file into stdout.
 .TP
 .BI \-\-bunzip2 " bz2-uncompressor"
-When uncompressing downloaded index files or when not linked against \fBlibbz2\fP
+When uncompressing downloaded index files or if not linked against \fBlibbz2\fP
 reprepro will use this program to uncompress \fB.bz2\fP files.
 The default value is \fBbunzip2\fP.
 If the program is not found or is \fBNONE\fP (all-uppercase) then uncompressing
 will always be done using the built in uncompression method or not be possible
-when not linked against \fBlibbz2\fP.
+if not linked against \fBlibbz2\fP.
 The program has to accept the compressed file as stdin and write
 the uncompressed file into stdout.
 .TP
 .BI \-\-unlzma " lzma-uncompressor"
-When trying to uncompress or read \fPlzma\fP compressed files, this program
-will be used.
+When uncompressing downloaded index files or if not linked against \fBliblzma\fP
+reprepro will use this program to uncompress \fB.lzma\fP files.
 The default value is \fBunlzma\fP.
-If the program is not found or is \fBNONE\fP (all-uppercase) then uncompressing
-lzma files will not be possible.
+If the program is not found or is \fBNONE\fP (all-uppercase)
+then uncompressing lzma files will always be done using
+the built in uncompression method
+or not be possible if not linked against \fBliblzma\fP.
 The program has to accept the compressed file as stdin and write
 the uncompressed file into stdout.
 .TP
 .BI \-\-unxz " xz-uncompressor"
-When trying to uncompress or read \fPxz\fP compressed files, this program
-will be used.
+When uncompressing downloaded index files or if not linked against \fBliblzma\fP
+reprepro will use this program to uncompress \fB.xz\fP files.
 The default value is \fBunxz\fP.
-If the program is not found or is \fBNONE\fP (all-uppercase) then uncompressing
-xz files will not be possible.
+If the program is not found or is \fBNONE\fP (all-uppercase)
+then uncompressing xz files will always be done using
+the built in uncompression method
+or not be possible if not linked against \fBliblzma\fP.
 The program has to accept the compressed file as stdin and write
 the uncompressed file into stdout.
 .TP
@@ -534,7 +538,7 @@ name starts with \fB/\fP, \fB./\fP, \fB+b/\fP, \fB+o/\fP, or \fB+c/\fP
 and the name may not start (except in the cases given before) with a \fB+\fP.
 
 For a format of the \fB.outlog\fP files generated for this script see the
-\fBmanual.html\fP shiped with reprepro.
+\fBmanual.html\fP shipped with reprepro.
 .SH COMMANDS
 .TP
 .BR export " [ " \fIcodenames\fP " ]"
@@ -850,7 +854,7 @@ time or imported from some remote source and not changed later.
 This command modifies it to readd missing checksum types.
 
 Only checksums already known are used.
-To update known checkums about files run \fBcollectnewchecksums\fP first.
+To update known checksums about files run \fBcollectnewchecksums\fP first.
 
 .TP
 .BR dumptracks " [ " \fIcodenames\fP " ]"
@@ -1100,6 +1104,8 @@ use a single space anywhere more than needed).
 Printout all the stored information of the specified
 part of the repository. (Or in other words, the content
 the corresponding Packages or Sources file would get)
+
+This command is deprecated and will be removed in a future version.
 .TP
 .BI "_addreference " filekey " " identifier
 Manually mark \fIfilekey\fP to be needed by \fIidentifier\fP
@@ -1825,7 +1831,7 @@ The possible action keywords are:
 mark the available package to be added to the target distribution unless
 the same version or a higher version is already marked as to be added/kept.
 (Note that without a prior delete rule (\fB\-\fP) or \fBsupersede\fP action,
-this will will never downgrade a package as the already existing version
+this will never downgrade a package as the already existing version
 is marked to be kept).
 .TP
 .B upgradeonly
@@ -1872,7 +1878,7 @@ but the source package name (and source version) is used to do the lookup.
 .B OmitExtraSourceOnly
 This field controls whether source packages with Extra-Source-Only
 set are ignore when getting source packages.
-Withouth this option or if it is true, those source packages
+Without this option or if it is true, those source packages
 are ignored, while if set to no or false, those source packages
 are also condidates if no other filter excludes them.
 (The default of true will likely change once reprepro supports
@@ -2023,7 +2029,7 @@ More than copied is the Section header (unless \fB\-S\fP is supplied),
 which is also used to guess the component (unless \fB\-C\fP is there).
 
 Some values like \fBPackage\fP, \fBFilename\fP, \fBSize\fP or \fBMD5sum\fP
-are forbidden, as their usage would severly confuse reprepro.
+are forbidden, as their usage would severely confuse reprepro.
 
 As an extension reprepro also supports patterns instead of packagenames.
 If the package name contains '*', '[' or '?',

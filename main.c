@@ -141,7 +141,7 @@ static off_t reservedotherspace = 1024*1024;
 
 /* define for each config value an owner, and only higher owners are allowed
  * to change something owned by lower owners. */
-enum config_option_owner config_state,
+static enum config_option_owner config_state,
 #define O(x) owner_ ## x = CONFIG_OWNER_DEFAULT
 O(fast), O(x_morguedir), O(x_outdir), O(x_basedir), O(x_distdir), O(x_dbdir), O(x_listdir), O(x_confdir), O(x_logdir), O(x_methoddir), O(x_section), O(x_priority), O(x_component), O(x_architecture), O(x_packagetype), O(nothingiserror), O(nolistsdownload), O(keepunusednew), O(keepunreferenced), O(keeptemporaries), O(keepdirectories), O(askforpassphrase), O(skipold), O(export), O(waitforlock), O(spacecheckmode), O(reserveddbspace), O(reservedotherspace), O(guessgpgtty), O(verbosedatabase), O(gunzip), O(bunzip2), O(unlzma), O(unxz), O(lunzip), O(unzstd), O(gnupghome), O(listformat), O(listmax), O(listskip), O(onlysmalldeletes), O(endhook), O(outhook);
 #undef O
@@ -846,7 +846,7 @@ static retvalue remove_packages(struct distribution *distribution, struct remove
 	}
 	return package_remove_each(distribution,
 			// TODO: why not arch comp pt here?
-			atom_unknown, atom_unknown, atom_unknown,
+			NULL, NULL, NULL,
 			package_source_fits, NULL,
 			toremove);
 }
@@ -2615,7 +2615,7 @@ ACTION_F(y, n, y, y, repairdescriptions) {
 	return result;
 }
 
-/*****************adding checkums of files again*****************/
+/*****************adding checksums of files again*****************/
 
 ACTION_F(y, n, y, y, redochecksums) {
 	retvalue result, r;
@@ -3451,7 +3451,7 @@ ACTION_D(n, n, n, clearvanished) {
 				if (verbose > 6)
 					printf(
 "Marking '%s' as used.\n", t->identifier);
-			} else if (verbose > 3 && database_allcreated()){
+			} else if (verbose > 3){
 				fprintf(stderr,
 "Strange, '%s' does not appear in packages.db yet.\n", t->identifier);
 			}
@@ -4142,7 +4142,7 @@ static retvalue callaction(command_t command, const struct action *action, int a
 
 		result = action->start(alldistributions,
 				x_section, x_priority,
-				atom_unknown, atom_unknown, atom_unknown,
+				NULL, NULL, NULL,
 				argc, argv);
 		logger_wait();
 
@@ -4394,7 +4394,7 @@ LO_ENDHOOK,
 LO_OUTHOOK,
 LO_UNIGNORE};
 static int longoption = 0;
-const char *programname;
+static const char *programname;
 
 static void setexport(const char *argument) {
 	if (strcasecmp(argument, "silent-never") == 0) {
@@ -4422,7 +4422,7 @@ static void setexport(const char *argument) {
 		return;
 	}
 	fprintf(stderr,
-"Error: --export needs an argument of 'never', 'normal' or 'force', but got '%s'\n",
+"Error: --export needs an argument of 'silenv-never', 'never', 'changed', 'lookedat' or 'force', but got '%s'\n",
 			argument);
 	exit(EXIT_FAILURE);
 }
