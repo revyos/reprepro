@@ -7,6 +7,8 @@
 	The git changes are not in chronological order,
 	so dates can appear more than once.
 	* NEWS: Copy from "Release Notes" in Benjamin's README.md
+	* README: Integrate info from Benjamin's README.md.
+	Integrate "How to keep multiple versions" and "Database layout changes".
 
 2021-07-20  Benjamin Drung <benjamin.drung@ionos.com>
 
