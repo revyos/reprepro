@@ -9,6 +9,7 @@
 	* NEWS: Copy from "Release Notes" in Benjamin's README.md
 	* README: Integrate info from Benjamin's README.md.
 	Integrate "How to keep multiple versions" and "Database layout changes".
+	* TODO: Remove "multiple versions" entry
 
 2021-07-20  Benjamin Drung <benjamin.drung@ionos.com>
 

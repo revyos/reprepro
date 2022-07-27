@@ -15,10 +15,9 @@ half far goals:
 	rewrite error handling, caching error messages and handling Ctrl-C better.
 
 far goals:
-	check for unmeet Dependencies
-	      for unmeet Build-dependencies.
-	write dokumentation, some examples
-	allow multiple versions in a distribution (needs major rewrite I fear)
+	check for unmet Dependencies
+	      for unmet Build-dependencies.
+	write documentation and some examples.
 	record timestamp when packages are added.
 	option to keep apt-get'able source to each binary (needs mutliple source versions)
 	switch from libdb?.? to sane database
