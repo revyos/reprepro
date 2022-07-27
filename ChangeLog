@@ -6,6 +6,7 @@
 	The entries are generated from git and edited manually.
 	The git changes are not in chronological order,
 	so dates can appear more than once.
+	* NEWS: Copy from "Release Notes" in Benjamin's README.md
 
 2021-07-20  Benjamin Drung <benjamin.drung@ionos.com>
 

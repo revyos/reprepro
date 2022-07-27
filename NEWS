@@ -1,3 +1,9 @@
+Updates between 5.3.1 and 5.4.0:
+- Add shunit2 based tests (https://bugs.debian.org/857302)
+- Support multiple versions. (https://bugs.debian.org/570623)
+- Add the commands move, movesrc, movematched, movefilter
+- Add Limit and Archive option
+
 Updates between 5.3.0 and 5.3.1:
 - fix manpage to add the behaviour if reprepro is linked against liblzma
 - mark 'dumpcontents' command as deprecated
