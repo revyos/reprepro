@@ -175,6 +175,10 @@ retvalue release_init(struct release **release, const char *codename, const char
 	size_t len, suitelen, codenamelen;
 	retvalue r;
 
+	if (verbose >= 15)
+		fprintf(stderr, "trace: release_init(codename=%s, suite=%s, fakecomponentprefix=%s) called.\n",
+		        codename, suite, fakecomponentprefix);
+
 	n = zNEW(struct release);
 	if (FAILEDTOALLOC(n))
 		return RET_ERROR_OOM;
@@ -441,7 +445,7 @@ static retvalue release_usecached(struct release *release,
 
 		if (filename[ic] == NULL)
 			continue;
-		r = table_getrecord(release->cachedb, filename[ic],
+		r = table_getrecord(release->cachedb, false, filename[ic],
 				&combinedchecksum, NULL);
 		if (!RET_IS_OK(r)) {
 			result = r;

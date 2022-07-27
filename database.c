@@ -43,6 +43,7 @@
 #include "dpkgversions.h"
 #include "distribution.h"
 #include "database_p.h"
+#include "chunks.h"
 
 #define STRINGIFY(x) #x
 #define TOSTRING(x) STRINGIFY(x)
@@ -54,13 +55,20 @@
 static bool rdb_initialized, rdb_used, rdb_locked, rdb_verbose;
 static int rdb_dircreationdepth;
 static bool rdb_nopackages, rdb_readonly;
-static bool rdb_packagesdatabaseopen;
-static bool rdb_trackingdatabaseopen;
 static /*@null@*/ char *rdb_version, *rdb_lastsupportedversion,
 	*rdb_dbversion, *rdb_lastsupporteddbversion;
+static DB_ENV *rdb_env = NULL;
 
 struct table *rdb_checksums, *rdb_contents;
 struct table *rdb_references;
+
+struct opened_tables {
+	struct opened_tables *next;
+	const char *name;
+	const char *subname;
+};
+
+struct opened_tables *opened_tables = NULL;
 
 static void database_free(void) {
 	if (!rdb_initialized)
@@ -78,6 +86,36 @@ static void database_free(void) {
 
 static inline char *dbfilename(const char *filename) {
 	return calc_dirconcat(global.dbdir, filename);
+}
+
+static retvalue database_openenv(void) {
+	int dbret;
+
+	dbret = db_env_create(&rdb_env, 0);
+	if (dbret != 0) {
+		fprintf(stderr, "db_env_create: %s\n", db_strerror(dbret));
+		return RET_ERROR;
+	}
+
+	// DB_INIT_LOCK is needed to open multiple databases in one file (e.g. for move command)
+	dbret = rdb_env->open(rdb_env, global.dbdir,
+	                      DB_CREATE | DB_INIT_MPOOL | DB_PRIVATE | DB_INIT_LOCK, 0664);
+	if (dbret != 0) {
+		rdb_env->err(rdb_env, dbret, "environment open: %s", global.dbdir);
+		return RET_ERROR;
+	}
+
+	return RET_OK;
+}
+
+static void database_closeenv(void) {
+	int dbret;
+
+	dbret = rdb_env->close(rdb_env, 0);
+	if (dbret != 0) {
+		fprintf(stderr, "Error: DB_ENV->close: %s\n", db_strerror(dbret));
+	}
+	rdb_env = NULL;
 }
 
 /**********************/
@@ -145,6 +183,13 @@ static retvalue database_lock(size_t waitforlock) {
 	}
 	free(lockfile);
 	rdb_locked = true;
+
+	r = database_openenv();
+	if (RET_WAS_ERROR(r)) {
+		(void)unlink(lockfile);
+		free(lockfile);
+		return r;
+	}
 	return RET_OK;
 }
 
@@ -153,6 +198,7 @@ static void releaselock(void) {
 
 	assert (rdb_locked);
 
+	database_closeenv();
 	lockfile = dbfilename("lockfile");
 	if (lockfile == NULL)
 		return;
@@ -208,16 +254,17 @@ static retvalue database_hasdatabasefile(const char *filename, /*@out@*/bool *ex
 
 enum database_type {
 	dbt_QUERY,
-	dbt_BTREE, dbt_BTREEDUP, dbt_BTREEPAIRS,
+	dbt_BTREE, dbt_BTREEDUP, dbt_BTREEPAIRS, dbt_BTREEVERSIONS,
 	dbt_HASH,
 	dbt_COUNT /* must be last */
 };
 static const uint32_t types[dbt_COUNT] = {
 	DB_UNKNOWN,
-	DB_BTREE, DB_BTREE, DB_BTREE,
+	DB_BTREE, DB_BTREE, DB_BTREE, DB_BTREE,
 	DB_HASH
 };
 
+static int debianversioncompare(UNUSED(DB *db), const DBT *a, const DBT *b);
 #if DB_VERSION_MAJOR >= 6
 static int paireddatacompare(UNUSED(DB *db), const DBT *a, const DBT *b, size_t *locp);
 #else
@@ -225,26 +272,26 @@ static int paireddatacompare(UNUSED(DB *db), const DBT *a, const DBT *b);
 #endif
 
 static retvalue database_opentable(const char *filename, /*@null@*/const char *subtable, enum database_type type, uint32_t flags, /*@out@*/DB **result) {
-	char *fullfilename;
 	DB *table;
 	int dbret;
 
-	fullfilename = dbfilename(filename);
-	if (FAILEDTOALLOC(fullfilename))
-		return RET_ERROR_OOM;
-
-	dbret = db_create(&table, NULL, 0);
+	dbret = db_create(&table, rdb_env, 0);
 	if (dbret != 0) {
 		fprintf(stderr, "db_create: %s\n", db_strerror(dbret));
-		free(fullfilename);
 		return RET_DBERR(dbret);
 	}
-	if (type == dbt_BTREEDUP || type == dbt_BTREEPAIRS) {
+	if (type == dbt_BTREEPAIRS || type == dbt_BTREEVERSIONS) {
 		dbret = table->set_flags(table, DB_DUPSORT);
 		if (dbret != 0) {
 			table->err(table, dbret, "db_set_flags(DB_DUPSORT):");
 			(void)table->close(table, 0);
-			free(fullfilename);
+			return RET_DBERR(dbret);
+		}
+	} else if (type == dbt_BTREEDUP) {
+		dbret = table->set_flags(table, DB_DUP);
+		if (dbret != 0) {
+			table->err(table, dbret, "db_set_flags(DB_DUP):");
+			(void)table->close(table, 0);
 			return RET_DBERR(dbret);
 		}
 	}
@@ -253,7 +300,14 @@ static retvalue database_opentable(const char *filename, /*@null@*/const char *s
 		if (dbret != 0) {
 			table->err(table, dbret, "db_set_dup_compare:");
 			(void)table->close(table, 0);
-			free(fullfilename);
+			return RET_DBERR(dbret);
+		}
+	}
+	if (type == dbt_BTREEVERSIONS) {
+		dbret = table->set_dup_compare(table, debianversioncompare);
+		if (dbret != 0) {
+			table->err(table, dbret, "db_set_dup_compare:");
+			(void)table->close(table, 0);
 			return RET_DBERR(dbret);
 		}
 	}
@@ -274,24 +328,21 @@ static retvalue database_opentable(const char *filename, /*@null@*/const char *s
 #endif
 #endif
 #endif
-	dbret = DB_OPEN(table, fullfilename, subtable, types[type], flags);
+	dbret = DB_OPEN(table, filename, subtable, types[type], flags);
 	if (dbret == ENOENT && !ISSET(flags, DB_CREATE)) {
 		(void)table->close(table, 0);
-		free(fullfilename);
 		return RET_NOTHING;
 	}
 	if (dbret != 0) {
 		if (subtable != NULL)
 			table->err(table, dbret, "db_open(%s:%s)[%d]",
-					fullfilename, subtable, dbret);
+					filename, subtable, dbret);
 		else
 			table->err(table, dbret, "db_open(%s)[%d]",
-					fullfilename, dbret);
+					filename, dbret);
 		(void)table->close(table, 0);
-		free(fullfilename);
 		return RET_DBERR(dbret);
 	}
-	free(fullfilename);
 	*result = table;
 	return RET_OK;
 }
@@ -933,33 +984,88 @@ static const char databaseerror[] = "Internal error of the underlying BerkeleyDB
  There is nothing that cannot be solved by another layer of indirection, except
  too many levels of indirection. (Source forgotten) */
 
+struct cursor {
+	DBC *cursor;
+	uint32_t flags;
+	retvalue r;
+};
+
 struct table {
 	char *name, *subname;
 	DB *berkeleydb;
-	bool *flagreset;
+	DB *sec_berkeleydb;
 	bool readonly, verbose;
+	uint32_t flags;
 };
 
 static void table_printerror(struct table *table, int dbret, const char *action) {
-	if (table->subname != NULL)
-		table->berkeleydb->err(table->berkeleydb, dbret,
-				"%sWithin %s subtable %s at %s",
-				databaseerror, table->name, table->subname,
-				action);
-	else
-		table->berkeleydb->err(table->berkeleydb, dbret,
-				"%sWithin %s at %s",
-				databaseerror, table->name, action);
+	char *error_msg;
+
+	switch (dbret) {
+	case DB_MALFORMED_KEY:
+		error_msg = "DB_MALFORMED_KEY: Primary key does not contain the separator '|'.";
+		break;
+	case RET_ERROR_OOM:
+		error_msg = "RET_ERROR_OOM: Out of memory.";
+		break;
+	default:
+		error_msg = NULL;
+		break;
+	}
+
+	if (error_msg == NULL) {
+		if (table->subname != NULL)
+			table->berkeleydb->err(table->berkeleydb, dbret,
+					"%sWithin %s subtable %s at %s",
+					databaseerror, table->name, table->subname,
+					action);
+		else
+			table->berkeleydb->err(table->berkeleydb, dbret,
+					"%sWithin %s at %s",
+					databaseerror, table->name, action);
+	} else {
+		if (table->subname != NULL)
+			table->berkeleydb->errx(table->berkeleydb,
+					"%sWithin %s subtable %s at %s: %s",
+					databaseerror, table->name, table->subname,
+					action, error_msg);
+		else
+			table->berkeleydb->errx(table->berkeleydb,
+					"%sWithin %s at %s: %s",
+					databaseerror, table->name, action, error_msg);
+	}
+}
+
+static void print_opened_tables(FILE *stream) {
+	if (opened_tables == NULL) {
+		fprintf(stream, "No tables are opened.\n");
+	} else {
+		fprintf(stream, "Opened tables:\n");
+		for (struct opened_tables *iter = opened_tables; iter != NULL; iter = iter->next) {
+			fprintf(stream, " * %s - '%s'\n", iter->name, iter->subname);
+		}
+	}
 }
 
 retvalue table_close(struct table *table) {
+	struct opened_tables *prev = NULL;
 	int dbret;
-	retvalue result;
+	retvalue result = RET_OK;
 
+	if (verbose >= 15)
+		fprintf(stderr, "trace: table_close(table.name=%s, table.subname=%s) called.\n",
+		        table == NULL ? NULL : table->name, table == NULL ? NULL : table->subname);
 	if (table == NULL)
 		return RET_NOTHING;
-	if (table->flagreset != NULL)
-		*table->flagreset = false;
+	if (table->sec_berkeleydb != NULL) {
+		dbret = table->sec_berkeleydb->close(table->sec_berkeleydb, 0);
+		if (dbret != 0) {
+			fprintf(stderr, "db_sec_close(%s, %s): %s\n",
+					table->name, table->subname,
+					db_strerror(dbret));
+			result = RET_DBERR(dbret);
+		}
+	}
 	if (table->berkeleydb == NULL) {
 		assert (table->readonly);
 		dbret = 0;
@@ -970,17 +1076,34 @@ retvalue table_close(struct table *table) {
 				table->name, table->subname,
 				db_strerror(dbret));
 		result = RET_DBERR(dbret);
-	} else
-		result = RET_OK;
+	}
+
+	for (struct opened_tables *iter = opened_tables; iter != NULL; iter = iter->next) {
+		if(strcmp2(iter->name, table->name) == 0 && strcmp2(iter->subname, table->subname) == 0) {
+			if (prev == NULL) {
+				opened_tables = iter->next;
+			} else {
+				prev->next = iter->next;
+			}
+			free(iter);
+			break;
+		}
+		prev = iter;
+	}
+
+	if (verbose >= 25)
+		print_opened_tables(stderr);
+
 	free(table->name);
 	free(table->subname);
 	free(table);
 	return result;
 }
 
-retvalue table_getrecord(struct table *table, const char *key, char **data_p, size_t *datalen_p) {
+retvalue table_getrecord(struct table *table, bool secondary, const char *key, char **data_p, size_t *datalen_p) {
 	int dbret;
 	DBT Key, Data;
+	DB *db;
 
 	assert (table != NULL);
 	if (table->berkeleydb == NULL) {
@@ -992,8 +1115,11 @@ retvalue table_getrecord(struct table *table, const char *key, char **data_p, si
 	CLEARDBT(Data);
 	Data.flags = DB_DBT_MALLOC;
 
-	dbret = table->berkeleydb->get(table->berkeleydb, NULL,
-			&Key, &Data, 0);
+	if (secondary)
+		db = table->sec_berkeleydb;
+	else
+		db = table->berkeleydb;
+	dbret = db->get(db, NULL, &Key, &Data, 0);
 	// TODO: find out what error code means out of memory...
 	if (dbret == DB_NOTFOUND)
 		return RET_NOTHING;
@@ -1007,11 +1133,11 @@ retvalue table_getrecord(struct table *table, const char *key, char **data_p, si
 	    ((const char*)Data.data)[Data.size-1] != '\0') {
 		if (table->subname != NULL)
 			fprintf(stderr,
-"Database %s(%s) returned corrupted (not null-terminated) data!",
+"Database %s(%s) returned corrupted (not null-terminated) data!\n",
 					table->name, table->subname);
 		else
 			fprintf(stderr,
-"Database %s returned corrupted (not null-terminated) data!",
+"Database %s returned corrupted (not null-terminated) data!\n",
 					table->name);
 		free(Data.data);
 		return RET_ERROR;
@@ -1095,11 +1221,11 @@ retvalue table_gettemprecord(struct table *table, const char *key, const char **
 	    ((const char*)Data.data)[Data.size-1] != '\0') {
 		if (table->subname != NULL)
 			fprintf(stderr,
-"Database %s(%s) returned corrupted (not null-terminated) data!",
+"Database %s(%s) returned corrupted (not null-terminated) data!\n",
 					table->name, table->subname);
 		else
 			fprintf(stderr,
-"Database %s returned corrupted (not null-terminated) data!",
+"Database %s returned corrupted (not null-terminated) data!\n",
 					table->name);
 		return RET_ERROR;
 	}
@@ -1192,7 +1318,7 @@ retvalue table_addrecord(struct table *table, const char *key, const char *data,
 	SETDBT(Key, key);
 	SETDBTl(Data, data, datalen + 1);
 	dbret = table->berkeleydb->put(table->berkeleydb, NULL,
-			&Key, &Data, DB_NODUPDATA);
+			&Key, &Data, ISSET(table->flags, DB_DUPSORT) ? DB_NODUPDATA : 0);
 	if (dbret != 0 && !(ignoredups && dbret == DB_KEYEXIST)) {
 		table_printerror(table, dbret, "put");
 		return RET_DBERR(dbret);
@@ -1239,6 +1365,9 @@ retvalue table_adduniqsizedrecord(struct table *table, const char *key, const ch
 	return RET_OK;
 }
 retvalue table_adduniqrecord(struct table *table, const char *key, const char *data) {
+	if (verbose >= 15)
+		fprintf(stderr, "trace: table_adduniqrecord(table={name: %s, subname: %s}, key=%s) called.\n",
+		        table->name, table->subname, key);
 	return table_adduniqsizedrecord(table, key, data, strlen(data)+1,
 			false, false);
 }
@@ -1275,26 +1404,34 @@ retvalue table_deleterecord(struct table *table, const char *key, bool ignoremis
 retvalue table_replacerecord(struct table *table, const char *key, const char *data) {
 	retvalue r;
 
+	if (verbose >= 15)
+		fprintf(stderr, "trace: table_replacerecord(table={name: %s, subname: %s}, key=%s) called.\n",
+		        table->name, table->subname, key);
 	r = table_deleterecord(table, key, false);
 	if (r != RET_ERROR_MISSING && RET_WAS_ERROR(r))
 		return r;
 	return table_adduniqrecord(table, key, data);
 }
 
-struct cursor {
-	DBC *cursor;
-	uint32_t flags;
-	retvalue r;
-};
-
-retvalue table_newglobalcursor(struct table *table, struct cursor **cursor_p) {
+static retvalue newcursor(struct table *table, uint32_t flags, struct cursor **cursor_p) {
+	DB *berkeleydb;
 	struct cursor *cursor;
 	int dbret;
 
-	if (table->berkeleydb == NULL) {
+	if (verbose >= 15)
+		fprintf(stderr, "trace: newcursor(table={name: %s, subname: %s}) called.\n",
+		        table->name, table->subname);
+
+	if (table->sec_berkeleydb == NULL) {
+		berkeleydb = table->berkeleydb;
+	} else {
+		berkeleydb = table->sec_berkeleydb;
+	}
+
+	if (berkeleydb == NULL) {
 		assert (table->readonly);
 		*cursor_p = NULL;
-		return RET_OK;
+		return RET_NOTHING;
 	}
 
 	cursor = zNEW(struct cursor);
@@ -1302,9 +1439,9 @@ retvalue table_newglobalcursor(struct table *table, struct cursor **cursor_p) {
 		return RET_ERROR_OOM;
 
 	cursor->cursor = NULL;
-	cursor->flags = DB_NEXT;
+	cursor->flags = flags;
 	cursor->r = RET_OK;
-	dbret = table->berkeleydb->cursor(table->berkeleydb, NULL,
+	dbret = berkeleydb->cursor(berkeleydb, NULL,
 			&cursor->cursor, 0);
 	if (dbret != 0) {
 		table_printerror(table, dbret, "cursor");
@@ -1312,6 +1449,39 @@ retvalue table_newglobalcursor(struct table *table, struct cursor **cursor_p) {
 		return RET_DBERR(dbret);
 	}
 	*cursor_p = cursor;
+	return RET_OK;
+}
+
+retvalue table_newglobalcursor(struct table *table, bool duplicate, struct cursor **cursor_p) {
+	retvalue r;
+
+	r = newcursor(table, duplicate ? DB_NEXT : DB_NEXT_NODUP, cursor_p);
+	if (r == RET_NOTHING) {
+		// table_newglobalcursor returned RET_OK when table->berkeleydb == NULL. Is that return value wanted?
+		r = RET_OK;
+	}
+	return r;
+}
+
+static inline retvalue parse_data(struct table *table, DBT Key, DBT Data, /*@null@*//*@out@*/const char **key_p, /*@out@*/const char **data_p, /*@out@*/size_t *datalen_p) {
+	if (Key.size <= 0 || Data.size <= 0 ||
+	    ((const char*)Key.data)[Key.size-1] != '\0' ||
+	    ((const char*)Data.data)[Data.size-1] != '\0') {
+		if (table->subname != NULL)
+			fprintf(stderr,
+"Database %s(%s) returned corrupted (not null-terminated) data!",
+					table->name, table->subname);
+		else
+			fprintf(stderr,
+"Database %s returned corrupted (not null-terminated) data!",
+					table->name);
+		return RET_ERROR;
+	}
+	if (key_p != NULL)
+		*key_p = Key.data;
+	*data_p = Data.data;
+	if (datalen_p != NULL)
+		*datalen_p = Data.size - 1;
 	return RET_OK;
 }
 
@@ -1335,11 +1505,11 @@ static inline retvalue parse_pair(struct table *table, DBT Key, DBT Data, /*@nul
 	if (separator == NULL) {
 		if (table->subname != NULL)
 			fprintf(stderr,
-"Database %s(%s) returned corrupted data!",
+"Database %s(%s) returned corrupted data!\n",
 					table->name, table->subname);
 		else
 			fprintf(stderr,
-"Database %s returned corrupted data!",
+"Database %s returned corrupted data!\n",
 					table->name);
 		return RET_ERROR;
 	}
@@ -1351,32 +1521,72 @@ static inline retvalue parse_pair(struct table *table, DBT Key, DBT Data, /*@nul
 	return RET_OK;
 }
 
-retvalue table_newduplicatecursor(struct table *table, const char *key, struct cursor **cursor_p, const char **value_p, const char **data_p, size_t *datalen_p) {
+retvalue table_newduplicatecursor(struct table *table, const char *key, long long skip, struct cursor **cursor_p, const char **key_p, const char **data_p, size_t *datalen_p) {
 	struct cursor *cursor;
 	int dbret;
 	DBT Key, Data;
 	retvalue r;
 
-	if (table->berkeleydb == NULL) {
-		assert (table->readonly);
-		*cursor_p = NULL;
+	r = newcursor(table, DB_NEXT_DUP, &cursor);
+	if(!RET_IS_OK(r)) {
+		return r;
+	}
+	SETDBT(Key, key);
+	CLEARDBT(Data);
+	dbret = cursor->cursor->c_get(cursor->cursor, &Key, &Data, DB_SET);
+	if (dbret == DB_NOTFOUND || dbret == DB_KEYEMPTY) {
+		(void)cursor->cursor->c_close(cursor->cursor);
+		free(cursor);
 		return RET_NOTHING;
 	}
-
-	cursor = zNEW(struct cursor);
-	if (FAILEDTOALLOC(cursor))
-		return RET_ERROR_OOM;
-
-	cursor->cursor = NULL;
-	cursor->flags = DB_NEXT_DUP;
-	cursor->r = RET_OK;
-	dbret = table->berkeleydb->cursor(table->berkeleydb, NULL,
-			&cursor->cursor, 0);
 	if (dbret != 0) {
-		table_printerror(table, dbret, "cursor");
+		table_printerror(table, dbret, "c_get(DB_SET)");
+		(void)cursor->cursor->c_close(cursor->cursor);
 		free(cursor);
 		return RET_DBERR(dbret);
 	}
+
+	while (skip > 0) {
+		CLEARDBT(Key);
+		CLEARDBT(Data);
+
+		dbret = cursor->cursor->c_get(cursor->cursor, &Key, &Data, cursor->flags);
+		if (dbret == DB_NOTFOUND) {
+			(void)cursor->cursor->c_close(cursor->cursor);
+			free(cursor);
+			return RET_NOTHING;
+		}
+		if (dbret != 0) {
+			table_printerror(table, dbret, "c_get(DB_NEXT_DUP)");
+			(void)cursor->cursor->c_close(cursor->cursor);
+			free(cursor);
+			return RET_DBERR(dbret);
+		}
+
+		skip--;
+	}
+
+	r = parse_data(table, Key, Data, key_p, data_p, datalen_p);
+	if (RET_WAS_ERROR(r)) {
+		(void)cursor->cursor->c_close(cursor->cursor);
+		free(cursor);
+		return r;
+	}
+	*cursor_p = cursor;
+	return RET_OK;
+}
+
+retvalue table_newduplicatepairedcursor(struct table *table, const char *key, struct cursor **cursor_p, const char **value_p, const char **data_p, size_t *datalen_p) {
+	struct cursor *cursor;
+	int dbret;
+	DBT Key, Data;
+	retvalue r;
+
+	r = newcursor(table, DB_NEXT_DUP, cursor_p);
+	if(!RET_IS_OK(r)) {
+		return r;
+	}
+	cursor = *cursor_p;
 	SETDBT(Key, key);
 	CLEARDBT(Data);
 	dbret = cursor->cursor->c_get(cursor->cursor, &Key, &Data, DB_SET);
@@ -1410,27 +1620,12 @@ retvalue table_newpairedcursor(struct table *table, const char *key, const char 
 	retvalue r;
 	size_t valuelen = strlen(value);
 
-	if (table->berkeleydb == NULL) {
-		assert (table->readonly);
-		*cursor_p = NULL;
-		return RET_NOTHING;
-	}
-
-	cursor = zNEW(struct cursor);
-	if (FAILEDTOALLOC(cursor))
-		return RET_ERROR_OOM;
-
-	cursor->cursor = NULL;
 	/* cursor_next is not allowed with this type: */
-	cursor->flags = DB_GET_BOTH;
-	cursor->r = RET_OK;
-	dbret = table->berkeleydb->cursor(table->berkeleydb, NULL,
-			&cursor->cursor, 0);
-	if (dbret != 0) {
-		table_printerror(table, dbret, "cursor");
-		free(cursor);
-		return RET_DBERR(dbret);
+	r = newcursor(table, DB_GET_BOTH, cursor_p);
+	if(!RET_IS_OK(r)) {
+		return r;
 	}
+	cursor = *cursor_p;
 	SETDBT(Key, key);
 	SETDBTl(Data, value, valuelen + 1);
 	dbret = cursor->cursor->c_get(cursor->cursor, &Key, &Data, DB_GET_BOTH);
@@ -1484,96 +1679,16 @@ retvalue cursor_close(struct table *table, struct cursor *cursor) {
 	return r;
 }
 
-bool cursor_nexttemp(struct table *table, struct cursor *cursor, const char **key, const char **data) {
-	DBT Key, Data;
+static bool cursor_next(struct table *table, struct cursor *cursor, DBT *Key, DBT *Data) {
 	int dbret;
 
 	if (cursor == NULL)
 		return false;
 
-	CLEARDBT(Key);
-	CLEARDBT(Data);
+	CLEARDBT(*Key);
+	CLEARDBT(*Data);
 
-	dbret = cursor->cursor->c_get(cursor->cursor, &Key, &Data, DB_NEXT);
-	if (dbret == DB_NOTFOUND)
-		return false;
-
-	if (dbret != 0) {
-		table_printerror(table, dbret, "c_get(DB_NEXT)");
-		cursor->r = RET_DBERR(dbret);
-		return false;
-	}
-	if (Key.size <= 0 || Data.size <= 0 ||
-	    ((const char*)Key.data)[Key.size-1] != '\0' ||
-	    ((const char*)Data.data)[Data.size-1] != '\0') {
-		if (table->subname != NULL)
-			fprintf(stderr,
-"Database %s(%s) returned corrupted (not null-terminated) data!",
-					table->name, table->subname);
-		else
-			fprintf(stderr,
-"Database %s returned corrupted (not null-terminated) data!",
-					table->name);
-		cursor->r = RET_ERROR;
-		return false;
-	}
-	*key = Key.data;
-	*data = Data.data;
-	return true;
-}
-
-bool cursor_nexttempdata(struct table *table, struct cursor *cursor, const char **key, const char **data, size_t *len_p) {
-	DBT Key, Data;
-	int dbret;
-
-	if (cursor == NULL)
-		return false;
-
-	CLEARDBT(Key);
-	CLEARDBT(Data);
-
-	dbret = cursor->cursor->c_get(cursor->cursor, &Key, &Data, DB_NEXT);
-	if (dbret == DB_NOTFOUND)
-		return false;
-
-	if (dbret != 0) {
-		table_printerror(table, dbret, "c_get(DB_NEXT)");
-		cursor->r = RET_DBERR(dbret);
-		return false;
-	}
-	if (Key.size <= 0 || Data.size <= 0 ||
-	    ((const char*)Key.data)[Key.size-1] != '\0' ||
-	    ((const char*)Data.data)[Data.size-1] != '\0') {
-		if (table->subname != NULL)
-			fprintf(stderr,
-"Database %s(%s) returned corrupted (not null-terminated) data!",
-					table->name, table->subname);
-		else
-			fprintf(stderr,
-"Database %s returned corrupted (not null-terminated) data!",
-					table->name);
-		cursor->r = RET_ERROR;
-		return false;
-	}
-	if (key != NULL)
-		*key = Key.data;
-	*data = Data.data;
-	*len_p = Data.size - 1;
-	return true;
-}
-
-bool cursor_nextpair(struct table *table, struct cursor *cursor, /*@null@*/const char **key_p, const char **value_p, const char **data_p, size_t *datalen_p) {
-	DBT Key, Data;
-	int dbret;
-	retvalue r;
-
-	if (cursor == NULL)
-		return false;
-
-	CLEARDBT(Key);
-	CLEARDBT(Data);
-
-	dbret = cursor->cursor->c_get(cursor->cursor, &Key, &Data,
+	dbret = cursor->cursor->c_get(cursor->cursor, Key, Data,
 			cursor->flags);
 	if (dbret == DB_NOTFOUND)
 		return false;
@@ -1588,6 +1703,33 @@ bool cursor_nextpair(struct table *table, struct cursor *cursor, /*@null@*/const
 		cursor->r = RET_DBERR(dbret);
 		return false;
 	}
+	return true;
+}
+
+bool cursor_nexttempdata(struct table *table, struct cursor *cursor, const char **key, const char **data, size_t *len_p) {
+	DBT Key, Data;
+	bool success;
+	retvalue r;
+
+	success = cursor_next(table, cursor, &Key, &Data);
+	if (!success)
+		return false;
+	r = parse_data(table, Key, Data, key, data, len_p);
+	if (RET_WAS_ERROR(r)) {
+		cursor->r = r;
+		return false;
+	}
+	return true;
+}
+
+bool cursor_nextpair(struct table *table, struct cursor *cursor, /*@null@*/const char **key_p, const char **value_p, const char **data_p, size_t *datalen_p) {
+	DBT Key, Data;
+	bool success;
+	retvalue r;
+
+	success = cursor_next(table, cursor, &Key, &Data);
+	if (!success)
+		return false;
 	r = parse_pair(table, Key, Data, key_p, value_p, data_p, datalen_p);
 	if (RET_WAS_ERROR(r)) {
 		cursor->r = r;
@@ -1693,9 +1835,25 @@ retvalue database_haspackages(const char *identifier) {
 /****************************************************************************
  * Open the different types of tables with their needed flags:              *
  ****************************************************************************/
-static retvalue database_table(const char *filename, const char *subtable, enum database_type type, uint32_t flags, /*@out@*/struct table **table_p) {
+static retvalue database_table_secondary(const char *filename, const char *subtable, enum database_type type, uint32_t flags,
+                                         const char *secondary_filename, enum database_type secondary_type, /*@out@*/struct table **table_p) {
 	struct table *table;
+	struct opened_tables *opened_table;
 	retvalue r;
+
+	if (verbose >= 15)
+		fprintf(stderr, "trace: database_table_secondary(filename=%s, subtable=%s, type=%i, flags=%u, secondary_filename=%s, secondary_type=%i) called.\n",
+		        filename, subtable, type, flags, secondary_filename, secondary_type);
+
+	for (struct opened_tables *iter = opened_tables; iter != NULL; iter = iter->next) {
+		if(strcmp2(iter->name, filename) == 0 && strcmp2(iter->subname, subtable) == 0) {
+            fprintf(stderr,
+ "Internal Error: Trying to open table '%s' from file '%s' multiple times.\n"
+ "This should normally not happen (to avoid triggering bugs in the underlying BerkeleyDB)\n",
+                    subtable, filename);
+			return RET_ERROR;
+		}
+	}
 
 	table = zNEW(struct table);
 	if (FAILEDTOALLOC(table))
@@ -1717,6 +1875,7 @@ static retvalue database_table(const char *filename, const char *subtable, enum 
 		table->subname = NULL;
 	table->readonly = ISSET(flags, DB_RDONLY);
 	table->verbose = rdb_verbose;
+	table->flags = flags;
 	r = database_opentable(filename, subtable, type, flags,
 			&table->berkeleydb);
 	if (RET_WAS_ERROR(r)) {
@@ -1738,8 +1897,54 @@ static retvalue database_table(const char *filename, const char *subtable, enum 
 		}
 
 	}
+
+	if (secondary_filename != NULL) {
+		r = database_opentable(secondary_filename, subtable, secondary_type, flags,
+				&table->sec_berkeleydb);
+		if (RET_WAS_ERROR(r)) {
+			table->berkeleydb->close(table->berkeleydb, 0);
+			free(table->subname);
+			free(table->name);
+			free(table);
+			return r;
+		}
+		if (r == RET_NOTHING) {
+			if (ISSET(flags, DB_RDONLY)) {
+				/* sometimes we don't want a return here, when? */
+				table->sec_berkeleydb = NULL;
+				r = RET_OK;
+			} else {
+				table->berkeleydb->close(table->berkeleydb, 0);
+				free(table->subname);
+				free(table->name);
+				free(table);
+				return r;
+			}
+
+		}
+	}
+
+	opened_table = zNEW(struct opened_tables);
+	if (FAILEDTOALLOC(opened_table)) {
+		free(table->subname);
+		free(table->name);
+		free(table);
+		return RET_ERROR_OOM;
+	}
+	opened_table->name = table->name;
+	opened_table->subname = table->subname;
+	opened_table->next = opened_tables;
+	opened_tables = opened_table;
+
+	if (verbose >= 25)
+		print_opened_tables(stderr);
+
 	*table_p = table;
 	return r;
+}
+
+static retvalue database_table(const char *filename, const char *subtable, enum database_type type, uint32_t flags, /*@out@*/struct table **table_p) {
+	return database_table_secondary(filename, subtable, type, flags, NULL, 0, table_p);
 }
 
 retvalue database_openreferences(void) {
@@ -1755,6 +1960,45 @@ retvalue database_openreferences(void) {
 	} else
 		rdb_references->verbose = false;
 	return RET_OK;
+}
+
+static int debianversioncompare(UNUSED(DB *db), const DBT *a, const DBT *b) {
+	const char *a_version;
+	const char *b_version;
+	int versioncmp;
+	// There is no way to indicate an error to the caller
+	// Thus return -1 in case of an error
+	retvalue r = -1;
+
+	if (a->size == 0 || ((char*)a->data)[a->size-1] != '\0') {
+		fprintf(stderr, "Database value '%.*s' empty or not NULL terminated.\n", a->size, (char*)a->data);
+		return r;
+	}
+	if (b->size == 0 || ((char*)b->data)[b->size-1] != '\0') {
+		fprintf(stderr, "Database value '%.*s' empty or not NULL terminated.\n", b->size, (char*)b->data);
+		return r;
+	}
+
+	a_version = strchr(a->data, '|');
+	if (a_version == NULL) {
+		fprintf(stderr, "Database value '%s' malformed. It should be 'package|version'.\n", (char*)a->data);
+		return r;
+	}
+	a_version++;
+	b_version = strchr(b->data, '|');
+	if (b_version == NULL) {
+		fprintf(stderr, "Database value '%s' malformed. It should be 'package|version'.\n", (char*)b->data);
+		return r;
+	}
+	b_version++;
+
+	r = dpkgversions_cmp(a_version, b_version, &versioncmp);
+	if (RET_WAS_ERROR(r)) {
+		fprintf(stderr, "Parse errors processing versions.\n");
+		return r;
+	}
+
+	return -versioncmp;
 }
 
 /* only compare the first 0-terminated part of the data */
@@ -1782,22 +2026,157 @@ retvalue database_opentracking(const char *codename, bool readonly, struct table
 				stderr);
 		return RET_ERROR;
 	}
-	if (rdb_trackingdatabaseopen) {
-		(void)fputs(
-"Internal Error: Trying to open multiple tracking databases at the same time.\nThis should normally not happen (to avoid triggering bugs in the underlying BerkeleyDB)\n",
-				stderr);
-		return RET_ERROR;
-	}
 
 	r = database_table("tracking.db", codename,
 			dbt_BTREEPAIRS, readonly?DB_RDONLY:DB_CREATE, &table);
 	assert (r != RET_NOTHING);
 	if (RET_WAS_ERROR(r))
 		return r;
-	table->flagreset = &rdb_trackingdatabaseopen;
-	rdb_trackingdatabaseopen = true;
 	*table_p = table;
 	return RET_OK;
+}
+
+static int get_package_name(DB *secondary, const DBT *pkey, const DBT *pdata, DBT *skey) {
+	const char *separator;
+	size_t length;
+
+	separator = memchr(pkey->data, '|', pkey->size);
+	if (unlikely(separator == NULL)) {
+		return DB_MALFORMED_KEY;
+	}
+
+	length = (size_t)separator - (size_t)pkey->data;
+	skey->flags = DB_DBT_APPMALLOC;
+	skey->data = strndup(pkey->data, length);
+	if (FAILEDTOALLOC(skey->data)) {
+		return RET_ERROR_OOM;
+	}
+	skey->size = length + 1;
+	return 0;
+}
+
+static retvalue database_translate_legacy_packages(void) {
+	struct cursor *databases_cursor, *cursor;
+	struct table *legacy_databases, *legacy_table, *packages;
+	const char *chunk, *packagename;
+	char *identifier, *key, *legacy_filename, *packages_filename, *packageversion;
+	retvalue r, result;
+	int ret, e;
+	size_t chunk_len;
+	DBT Key, Data;
+
+	if (verbose >= 15)
+		fprintf(stderr, "trace: database_translate_legacy_packages() called.\n");
+
+	if (!isdir(global.dbdir)) {
+		fprintf(stderr, "Cannot find directory '%s'!\n", global.dbdir);
+		return RET_ERROR;
+	}
+
+	packages_filename = dbfilename("packages.db");
+	legacy_filename = dbfilename("packages.legacy.db");
+	ret = rename(packages_filename, legacy_filename);
+	if (ret != 0) {
+		e = errno;
+		fprintf(stderr, "error %d renaming %s to %s: %s\n",
+				e, packages_filename, legacy_filename, strerror(e));
+		return (e != 0)?e:EINVAL;
+	}
+	if (verbose >= 15)
+		fprintf(stderr, "trace: Moved '%s' to '%s'.\n", packages_filename, legacy_filename);
+
+	r = database_table("packages.legacy.db", NULL, dbt_BTREE, DB_RDONLY, &legacy_databases);
+	assert (r != RET_NOTHING);
+	if (RET_WAS_ERROR(r))
+		return r;
+
+	r = table_newglobalcursor(legacy_databases, true, &databases_cursor);
+	assert (r != RET_NOTHING);
+	if (RET_WAS_ERROR(r)) {
+		(void)table_close(legacy_databases);
+		return r;
+	}
+	result = RET_NOTHING;
+	// Iterate over all databases inside the packages.db file.
+	while (cursor_next(legacy_databases, databases_cursor, &Key, &Data)) {
+		identifier = strndup(Key.data, Key.size);
+		if (FAILEDTOALLOC(identifier)) {
+			RET_UPDATE(result, RET_ERROR_OOM);
+			break;
+		}
+		if (verbose >= 15)
+			fprintf(stderr, "Converting table '%s' to new layout...\n", identifier);
+
+		r = database_table("packages.legacy.db", identifier, dbt_BTREE, DB_RDONLY, &legacy_table);
+		assert (r != RET_NOTHING);
+		if (RET_WAS_ERROR(r)) {
+			free(identifier);
+			RET_UPDATE(result, r);
+			break;
+		}
+
+		r = table_newglobalcursor(legacy_table, true, &cursor);
+		assert (r != RET_NOTHING);
+		if (RET_WAS_ERROR(r)) {
+			(void)table_close(legacy_table);
+			free(identifier);
+			RET_UPDATE(result, r);
+			break;
+		}
+
+		r = database_openpackages(identifier, false, &packages);
+		free(identifier);
+		identifier = NULL;
+		if (RET_WAS_ERROR(r)) {
+			(void)cursor_close(legacy_databases, databases_cursor);
+			(void)table_close(legacy_table);
+			RET_UPDATE(result, r);
+			break;
+		}
+
+		while (cursor_nexttempdata(legacy_table, cursor, &packagename, &chunk, &chunk_len)) {
+			r = chunk_getvalue(chunk, "Version", &packageversion);
+			if (!RET_IS_OK(r)) {
+				RET_UPDATE(result, r);
+				break;
+			}
+			key = package_primarykey(packagename, packageversion);
+			r = table_addrecord(packages, key, chunk, chunk_len, false);
+			free(key);
+			if (RET_WAS_ERROR(r)) {
+				RET_UPDATE(result, r);
+				break;
+			}
+		}
+
+		r = table_close(packages);
+		RET_UPDATE(result, r);
+		r = cursor_close(legacy_table, cursor);
+		RET_UPDATE(result, r);
+		r = table_close(legacy_table);
+		RET_UPDATE(result, r);
+
+		if (RET_WAS_ERROR(result)) {
+			break;
+		}
+		result = RET_OK;
+	}
+	r = cursor_close(legacy_databases, databases_cursor);
+	RET_ENDUPDATE(result, r);
+	r = table_close(legacy_databases);
+	RET_ENDUPDATE(result, r);
+
+	if (RET_IS_OK(result)) {
+		e = deletefile(legacy_filename);
+		if (e != 0) {
+			fprintf(stderr, "Could not delete '%s'!\n"
+"It can now safely be deleted and it all that is left to be done!\n",
+					legacy_filename);
+			return RET_ERRNO(e);
+		}
+	}
+
+	return result;
 }
 
 retvalue database_openpackages(const char *identifier, bool readonly, struct table **table_p) {
@@ -1810,21 +2189,34 @@ retvalue database_openpackages(const char *identifier, bool readonly, struct tab
 				stderr);
 		return RET_ERROR;
 	}
-	if (rdb_packagesdatabaseopen) {
-		(void)fputs(
-"Internal Error: Trying to open multiple packages databases at the same time.\n"
-"This should normally not happen (to avoid triggering bugs in the underlying BerkeleyDB)\n",
-				stderr);
-		return RET_ERROR;
-	}
 
-	r = database_table("packages.db", identifier,
-			dbt_BTREE, readonly?DB_RDONLY:DB_CREATE, &table);
+	r = database_table_secondary("packages.db", identifier,
+			dbt_BTREE, readonly?DB_RDONLY:DB_CREATE,
+			"packagenames.db", dbt_BTREEVERSIONS, &table);
 	assert (r != RET_NOTHING);
 	if (RET_WAS_ERROR(r))
 		return r;
-	table->flagreset = &rdb_packagesdatabaseopen;
-	rdb_packagesdatabaseopen = true;
+
+	if (table->berkeleydb != NULL && table->sec_berkeleydb == NULL) {
+		r = table_close(table);
+		if (RET_WAS_ERROR(r)) {
+			return r;
+		}
+		r = database_translate_legacy_packages();
+		if (RET_WAS_ERROR(r)) {
+			return r;
+		}
+		return database_openpackages(identifier, readonly, table_p);
+	}
+
+	if (table->berkeleydb != NULL && table->sec_berkeleydb != NULL) {
+		r = table->berkeleydb->associate(table->berkeleydb, NULL,
+				table->sec_berkeleydb, get_package_name, 0);
+		if (RET_WAS_ERROR(r)) {
+			return r;
+		}
+	}
+
 	*table_p = table;
 	return RET_OK;
 }
@@ -1836,7 +2228,12 @@ retvalue database_listpackages(struct strlist *identifiers) {
 
 /* drop a database */
 retvalue database_droppackages(const char *identifier) {
-	return database_dropsubtable("packages.db", identifier);
+	retvalue r;
+
+	r = database_dropsubtable("packages.db", identifier);
+	if (RET_IS_OK(r))
+		r = database_dropsubtable("packagenames.db", identifier);
+	return r;
 }
 
 retvalue database_openfiles(void) {
@@ -1956,7 +2353,7 @@ static retvalue table_copy(struct table *oldtable, struct table *newtable) {
 	const char *filekey, *data;
 	size_t data_len;
 
-	r = table_newglobalcursor(oldtable, &cursor);
+	r = table_newglobalcursor(oldtable, true, &cursor);
 	if (!RET_IS_OK(r))
 		return r;
 	while (cursor_nexttempdata(oldtable, cursor, &filekey,
@@ -2080,11 +2477,11 @@ static inline retvalue translate(struct table *oldmd5sums, struct table *newchec
 
 	/* first add all md5sums to checksums if not there yet */
 
-	r = table_newglobalcursor(oldmd5sums, &cursor);
+	r = table_newglobalcursor(oldmd5sums, true, &cursor);
 	if (RET_WAS_ERROR(r))
 		return r;
-	while (cursor_nexttemp(oldmd5sums, cursor,
-				&filekey, &md5sum)) {
+	while (cursor_nexttempdata(oldmd5sums, cursor,
+				&filekey, &md5sum, NULL)) {
 		struct checksums *n = NULL;
 		const char *combined;
 		size_t combinedlen;
@@ -2143,23 +2540,23 @@ static inline retvalue translate(struct table *oldmd5sums, struct table *newchec
 
 	/* then delete everything from checksums that is not in md5sums */
 
-	r = table_newglobalcursor(oldmd5sums, &cursor);
+	r = table_newglobalcursor(oldmd5sums, true, &cursor);
 	if (RET_WAS_ERROR(r))
 		return r;
-	r = table_newglobalcursor(newchecksums, &newcursor);
+	r = table_newglobalcursor(newchecksums, true, &newcursor);
 	if (RET_WAS_ERROR(r)) {
 		cursor_close(oldmd5sums, cursor);
 		return r;
 	}
-	while (cursor_nexttemp(oldmd5sums, cursor,
-				&filekey, &md5sum)) {
+	while (cursor_nexttempdata(oldmd5sums, cursor,
+				&filekey, &md5sum, NULL)) {
 		bool more;
 		int cmp;
 		const char *newfilekey, *dummy;
 
 		do {
-			more = cursor_nexttemp(newchecksums, newcursor,
-				&newfilekey, &dummy);
+			more = cursor_nexttempdata(newchecksums, newcursor,
+				&newfilekey, &dummy, NULL);
 			/* should have been added in the last step */
 			assert (more);
 			cmp = strcmp(filekey, newfilekey);

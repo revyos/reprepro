@@ -34,7 +34,7 @@ retvalue database_haspackages(const char *);
 
 bool table_recordexists(struct table *, const char *);
 /* retrieve a record from the database, return RET_NOTHING if there is none: */
-retvalue table_getrecord(struct table *, const char *, /*@out@*/char **, /*@out@*/ /*@null@*/ size_t *);
+retvalue table_getrecord(struct table *, bool, const char *, /*@out@*/char **, /*@out@*/ /*@null@*/ size_t *);
 retvalue table_gettemprecord(struct table *, const char *, /*@out@*//*@null@*/const char **, /*@out@*//*@null@*/size_t *);
 retvalue table_getpair(struct table *, const char *, const char *, /*@out@*/const char **, /*@out@*/size_t *);
 
@@ -46,10 +46,10 @@ retvalue table_deleterecord(struct table *, const char *key, bool ignoremissing)
 retvalue table_checkrecord(struct table *, const char *key, const char *data);
 retvalue table_removerecord(struct table *, const char *key, const char *data);
 
-retvalue table_newglobalcursor(struct table *, /*@out@*/struct cursor **);
-retvalue table_newduplicatecursor(struct table *, const char *, /*@out@*/struct cursor **, /*@out@*/const char **, /*@out@*/const char **, /*@out@*/size_t *);
+retvalue table_newglobalcursor(struct table *, bool /*duplicate*/, /*@out@*/struct cursor **);
+retvalue table_newduplicatecursor(struct table *, const char *, long long, /*@out@*/struct cursor **, /*@out@*/const char **, /*@out@*/const char **, /*@out@*/size_t *);
+retvalue table_newduplicatepairedcursor(struct table *, const char *, /*@out@*/struct cursor **, /*@out@*/const char **, /*@out@*/const char **, /*@out@*/size_t *);
 retvalue table_newpairedcursor(struct table *, const char *, const char *, /*@out@*/struct cursor **, /*@out@*//*@null@*/const char **, /*@out@*//*@null@*/size_t *);
-bool cursor_nexttemp(struct table *, struct cursor *, /*@out@*/const char **, /*@out@*/const char **);
 bool cursor_nexttempdata(struct table *, struct cursor *, /*@out@*/const char **, /*@out@*/const char **, /*@out@*/size_t *);
 bool cursor_nextpair(struct table *, struct cursor *, /*@null@*//*@out@*/const char **, /*@out@*/const char **, /*@out@*/const char **, /*@out@*/size_t *);
 retvalue cursor_replace(struct table *, struct cursor *, const char *, size_t);

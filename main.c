@@ -246,6 +246,57 @@ O(fast), O(x_morguedir), O(x_outdir), O(x_basedir), O(x_distdir), O(x_dbdir), O(
 			act(const struct atomlist *, packagetypes),  \
 			u(int, argc), u(const char *, argv[]))
 
+static retvalue splitnameandversion(const char *nameandversion, const char **name_p, const char **version_p) {
+	char *version;
+	retvalue r;
+
+	version = index(nameandversion, '=');
+	if (version != NULL) {
+		if (index(version+1, '=') != NULL) {
+			fprintf(stderr,
+"Cannot parse '%s': more than one '='\n",
+					nameandversion);
+			*name_p = NULL;
+			*version_p = NULL;
+			r = RET_ERROR;
+		} else if (version[1] == '\0') {
+			fprintf(stderr,
+"Cannot parse '%s': no version after '='\n",
+					nameandversion);
+			*name_p = NULL;
+			*version_p = NULL;
+			r = RET_ERROR;
+		} else if (version == nameandversion) {
+			fprintf(stderr,
+"Cannot parse '%s': no source name found before the '='\n",
+					nameandversion);
+			*name_p = NULL;
+			*version_p = NULL;
+			r = RET_ERROR;
+		} else {
+			*name_p = strndup(nameandversion, version - nameandversion);
+			if (FAILEDTOALLOC(*name_p))
+				r = RET_ERROR_OOM;
+			else
+				r = RET_OK;
+			*version_p = version + 1;
+		}
+	} else {
+		r = RET_OK;
+		*name_p = nameandversion;
+		*version_p = NULL;
+	}
+	return r;
+}
+
+static inline void splitnameandversion_done(const char **name_p, const char **version_p) {
+	// In case version_p points to a non-NULL value, name_p needs to be freed after usage.
+	if (*version_p != NULL) {
+		free((char*)*name_p);
+		*name_p = NULL;
+	}
+}
+
 ACTION_N(n, n, y, printargs) {
 	int i;
 
@@ -655,19 +706,19 @@ ACTION_R(n, n, n, y, addreferences) {
 	return ret;
 }
 
-static retvalue remove_from_target(struct distribution *distribution, struct trackingdata *trackingdata, struct target *target, int count, const char * const *names, int *todo, bool *gotremoved) {
+static retvalue remove_from_target(struct distribution *distribution, struct trackingdata *trackingdata, struct target *target, int count, struct nameandversion *nameandversion, int *remaining) {
 	retvalue result, r;
 	int i;
 
 	result = RET_NOTHING;
 	for (i = 0 ; i < count ; i++){
 		r = target_removepackage(target, distribution->logger,
-				names[i], trackingdata);
+				nameandversion[i].name, nameandversion[i].version, trackingdata);
 		RET_UPDATE(distribution->status, r);
 		if (RET_IS_OK(r)) {
-			if (!gotremoved[i])
-				(*todo)--;
-			gotremoved[i] = true;
+			if (!nameandversion[i].found)
+				(*remaining)--;
+			nameandversion[i].found = true;
 		}
 		RET_UPDATE(result, r);
 	}
@@ -677,9 +728,10 @@ static retvalue remove_from_target(struct distribution *distribution, struct tra
 ACTION_D(y, n, y, remove) {
 	retvalue result, r;
 	struct distribution *distribution;
+	struct nameandversion data[argc-2];
 	struct target *t;
-	bool *gotremoved;
-	int todo;
+	char *delimiter;
+	int remaining;
 
 	trackingdb tracks;
 	struct trackingdata trackingdata;
@@ -707,17 +759,25 @@ ACTION_D(y, n, y, remove) {
 		}
 		r = trackingdata_new(tracks, &trackingdata);
 		if (RET_WAS_ERROR(r)) {
-			(void)tracking_done(tracks);
+			(void)tracking_done(tracks, distribution);
 			return r;
 		}
 	}
 
-	todo = argc-2;
-	gotremoved = nzNEW(argc - 2, bool);
+	for (int i = 0 ; i < argc-2 ; i++) {
+		data[i].found = false;
+		r = splitnameandversion(argv[2 + i], &data[i].name, &data[i].version);
+		if (RET_WAS_ERROR(r)) {
+			for (i-- ; i >= 0 ; i--) {
+				splitnameandversion_done(&data[i].name, &data[i].version);
+			}
+			return r;
+		}
+	}
+
+	remaining = argc-2;
 	result = RET_NOTHING;
-	if (FAILEDTOALLOC(gotremoved))
-		result = RET_ERROR_OOM;
-	else for (t = distribution->targets ; t != NULL ; t = t->next) {
+	for (t = distribution->targets ; t != NULL ; t = t->next) {
 		 if (!target_matches(t, components, architectures, packagetypes))
 			 continue;
 		 r = target_initpackagesdb(t, READWRITE);
@@ -728,8 +788,8 @@ ACTION_D(y, n, y, remove) {
 				 (distribution->tracking != dt_NONE)
 				 	? &trackingdata
 					: NULL,
-				 t, argc-2, argv+2,
-				 &todo, gotremoved);
+				 t, argc-2, data,
+				 &remaining);
 		 RET_UPDATE(result, r);
 		 r = target_closepackagesdb(t);
 		 RET_UPDATE(distribution->status, r);
@@ -743,26 +803,30 @@ ACTION_D(y, n, y, remove) {
 			trackingdata_done(&trackingdata);
 		else
 			trackingdata_finish(tracks, &trackingdata);
-		r = tracking_done(tracks);
+		r = tracking_done(tracks, distribution);
 		RET_ENDUPDATE(result, r);
 	}
-	if (verbose >= 0 && !RET_WAS_ERROR(result) && todo > 0) {
+	if (verbose >= 0 && !RET_WAS_ERROR(result) && remaining > 0) {
 		int i = argc - 2;
 
 		(void)fputs("Not removed as not found: ", stderr);
-		while (i > 0) {
-			i--;
-			assert(gotremoved != NULL);
-			if (!gotremoved[i]) {
-				(void)fputs(argv[2 + i], stderr);
-				todo--;
-				if (todo > 0)
-					(void)fputs(", ", stderr);
+		delimiter = "";
+		for (i = 0; i < argc - 2; i++) {
+			if (!data[i].found) {
+				if (data[i].version == NULL) {
+					fprintf(stderr, "%s%s", delimiter, data[i].name);
+				} else {
+					fprintf(stderr, "%s%s=%s", delimiter, data[i].name, data[i].version);
+				}
+				remaining--;
+				delimiter = ", ";
 			}
 		}
 		(void)fputc('\n', stderr);
 	}
-	free(gotremoved);
+	for (int i = 0; i < argc - 2; i++) {
+		splitnameandversion_done(&data[i].name, &data[i].version);
+	}
 	return result;
 }
 
@@ -840,7 +904,7 @@ static retvalue remove_packages(struct distribution *distribution, struct remove
 				}
 			}
 		}
-		r = tracking_done(tracks);
+		r = tracking_done(tracks, distribution);
 		RET_ENDUPDATE(result, r);
 		return result;
 	}
@@ -904,44 +968,12 @@ ACTION_D(n, n, y, removesrcs) {
 	}
 	for (i = 0 ; i < argc-2 ; i++) {
 		data[i].found = false;
-		data[i].sourcename = argv[2 + i];
-		data[i].sourceversion = index(data[i].sourcename, '=');
-		if (data[i].sourceversion != NULL) {
-			if (index(data[i].sourceversion+1, '=') != NULL) {
-				fprintf(stderr,
-"Cannot parse '%s': more than one '='\n",
-						data[i].sourcename);
-				data[i].sourcename = NULL;
-				r = RET_ERROR;
-			} else if (data[i].sourceversion[1] == '\0') {
-				fprintf(stderr,
-"Cannot parse '%s': no version after '='\n",
-						data[i].sourcename);
-				data[i].sourcename = NULL;
-				r = RET_ERROR;
-			} else if (data[i].sourceversion == data[i].sourcename) {
-				fprintf(stderr,
-"Cannot parse '%s': no source name found before the '='\n",
-						data[i].sourcename);
-				data[i].sourcename = NULL;
-				r = RET_ERROR;
-			} else {
-				data[i].sourcename = strndup(data[i].sourcename,
-						data[i].sourceversion
-						- data[i].sourcename);
-				if (FAILEDTOALLOC(data[i].sourcename))
-					r = RET_ERROR_OOM;
-				else
-					r = RET_OK;
+		r = splitnameandversion(argv[2 + i], &data[i].sourcename, &data[i].sourceversion);
+		if (RET_WAS_ERROR(r)) {
+			for (i--; i >= 0; i--) {
+				splitnameandversion_done(&data[i].sourcename, &data[i].sourceversion);
 			}
-			if (RET_WAS_ERROR(r)) {
-				for (i-- ; i >= 0 ; i--) {
-					if (data[i].sourceversion != NULL)
-						free((char*)data[i].sourcename);
-				}
-				return r;
-			}
-			data[i].sourceversion++;
+			return r;
 		}
 	}
 	data[i].sourcename = NULL;
@@ -959,8 +991,7 @@ ACTION_D(n, n, y, removesrcs) {
 "No package from source '%s' (any version) found.\n",
 						data[i].sourcename);
 		}
-		if (data[i].sourceversion != NULL)
-			free((char*)data[i].sourcename);
+		splitnameandversion_done(&data[i].sourcename, &data[i].sourceversion);
 	}
 	return r;
 }
@@ -1013,7 +1044,7 @@ ACTION_D(y, n, y, removefilter) {
 		else {
 			r = trackingdata_new(tracks, &trackingdata);
 			if (RET_WAS_ERROR(r)) {
-				(void)tracking_done(tracks);
+				(void)tracking_done(tracks, distribution);
 				term_free(condition);
 				return r;
 			}
@@ -1028,7 +1059,7 @@ ACTION_D(y, n, y, removefilter) {
 			condition);
 	if (tracks != NULL) {
 		trackingdata_finish(tracks, &trackingdata);
-		r = tracking_done(tracks);
+		r = tracking_done(tracks, distribution);
 		RET_ENDUPDATE(result, r);
 	}
 	term_free(condition);
@@ -1075,7 +1106,7 @@ ACTION_D(y, n, y, removematched) {
 		else {
 			r = trackingdata_new(tracks, &trackingdata);
 			if (RET_WAS_ERROR(r)) {
-				(void)tracking_done(tracks);
+				(void)tracking_done(tracks, distribution);
 				return r;
 			}
 		}
@@ -1089,7 +1120,7 @@ ACTION_D(y, n, y, removematched) {
 			(void*)argv[2]);
 	if (tracks != NULL) {
 		trackingdata_finish(tracks, &trackingdata);
-		r = tracking_done(tracks);
+		r = tracking_done(tracks, distribution);
 		RET_ENDUPDATE(result, r);
 	}
 	return result;
@@ -1189,23 +1220,27 @@ ACTION_C(n, n, n, listcodenames) {
 }
 
 static retvalue list_in_target(struct target *target, const char *packagename) {
-	retvalue r, result;
-	struct package pkg;
+	retvalue r, result = RET_NOTHING;
+	struct package_cursor iterator;
 
 	if (listmax == 0)
 		return RET_NOTHING;
 
-	result = package_get(target, packagename, NULL, &pkg);
-	if (RET_IS_OK(result)) {
+	r = package_openduplicateiterator(target, packagename, 0, &iterator);
+	if (!RET_IS_OK(r))
+		return r;
+
+	do {
 		if (listskip <= 0) {
-			r = listformat_print(listformat, &pkg);
+			r = listformat_print(listformat, &iterator.current);
 			RET_UPDATE(result, r);
 			if (listmax > 0)
 				listmax--;
 		} else
 			listskip--;
-		package_done(&pkg);
-	}
+	} while (package_next(&iterator));
+	r = package_closeiterator(&iterator);
+	RET_ENDUPDATE(result, r);
 	return result;
 }
 
@@ -1282,17 +1317,20 @@ static retvalue newlsversion(struct lsversion **versions_p, struct package *pack
 
 static retvalue ls_in_target(struct target *target, const char *packagename, struct lsversion **versions_p) {
 	retvalue r, result;
-	struct package pkg;
+	struct package_cursor iterator;
 
-	result = package_get(target, packagename, NULL, &pkg);
-	if (RET_IS_OK(result)) {
-		r = package_getversion(&pkg);
+	result = package_openduplicateiterator(target, packagename, 0, &iterator);
+	if (!RET_IS_OK(result))
+		return result;
+	do {
+		r = package_getversion(&iterator.current);
 		if (RET_IS_OK(r))
-			r = newlsversion(versions_p, &pkg,
+			r = newlsversion(versions_p, &iterator.current,
 					target->architecture);
-		package_done(&pkg);
 		RET_UPDATE(result, r);
-	}
+	} while (package_next(&iterator));
+	r = package_closeiterator(&iterator);
+	RET_ENDUPDATE(result, r);
 	return result;
 }
 
@@ -1574,14 +1612,14 @@ ACTION_B(n, n, n, dumpcontents) {
 	result = database_openpackages(argv[1], true, &packages);
 	if (RET_WAS_ERROR(result))
 		return result;
-	r = table_newglobalcursor(packages, &cursor);
+	r = table_newglobalcursor(packages, true, &cursor);
 	assert (r != RET_NOTHING);
 	if (RET_WAS_ERROR(r)) {
 		(void)table_close(packages);
 		return r;
 	}
 	result = RET_NOTHING;
-	while (cursor_nexttemp(packages, cursor, &package, &chunk)) {
+	while (cursor_nexttempdata(packages, cursor, &package, &chunk, NULL)) {
 		printf("'%s' -> '%s'\n", package, chunk);
 		result = RET_OK;
 	}
@@ -1935,8 +1973,11 @@ ACTION_B(y, n, y, dumppull) {
 	return result;
 }
 
-ACTION_D(y, n, y, copy) {
+static retvalue copy_or_move(struct distribution *alldistributions, const struct atomlist * architectures, const struct atomlist * components,
+                             const struct atomlist * packagetypes, int argc, const char * argv[], bool remove_source) {
 	struct distribution *destination, *source;
+	struct nameandversion data[argc-2];
+	int i;
 	retvalue result;
 
 	result = distribution_get(alldistributions, argv[1], true, &destination);
@@ -1950,19 +1991,44 @@ ACTION_D(y, n, y, copy) {
 
 	if (destination->readonly) {
 		fprintf(stderr,
-"Cannot copy packages to read-only distribution '%s'.\n",
-				destination->codename);
+"Cannot %s packages to read-only distribution '%s'.\n",
+				remove_source ? "move" : "copy", destination->codename);
 		return RET_ERROR;
 	}
 	result = distribution_prepareforwriting(destination);
 	if (RET_WAS_ERROR(result))
 		return result;
 
-	return copy_by_name(destination, source, argc-3, argv+3,
-			components, architectures, packagetypes);
+	for (i = 0; i < argc-3; i++) {
+		result = splitnameandversion(argv[3 + i], &data[i].name, &data[i].version);
+		if (RET_WAS_ERROR(result)) {
+			for (i-- ; i >= 0 ; i--) {
+				splitnameandversion_done(&data[i].name, &data[i].version);
+			}
+			return result;
+		}
+	}
+	data[i].name = NULL;
+	data[i].version = NULL;
+
+	result = copy_by_name(destination, source, data,
+			components, architectures, packagetypes, remove_source);
+	for (i = 0; i < argc - 3; i++) {
+		splitnameandversion_done(&data[i].name, &data[i].version);
+	}
+	return result;
 }
 
-ACTION_D(y, n, y, copysrc) {
+ACTION_D(y, n, y, copy) {
+	return copy_or_move(alldistributions, architectures, components, packagetypes, argc, argv, false);
+}
+
+ACTION_D(y, n, y, move) {
+	return copy_or_move(alldistributions, architectures, components, packagetypes, argc, argv, true);
+}
+
+static retvalue copysrc_or_movesrc(struct distribution *alldistributions, const struct atomlist * architectures, const struct atomlist * components,
+                                   const struct atomlist * packagetypes, int argc, const char * argv[], bool remove_source) {
 	struct distribution *destination, *source;
 	retvalue result;
 
@@ -1976,8 +2042,8 @@ ACTION_D(y, n, y, copysrc) {
 		return result;
 	if (destination->readonly) {
 		fprintf(stderr,
-"Cannot copy packages to read-only distribution '%s'.\n",
-				destination->codename);
+"Cannot %s packages to read-only distribution '%s'.\n",
+				remove_source ? "move" : "copy", destination->codename);
 		return RET_ERROR;
 	}
 	result = distribution_prepareforwriting(destination);
@@ -1985,11 +2051,20 @@ ACTION_D(y, n, y, copysrc) {
 		return result;
 
 	return copy_by_source(destination, source, argc-3, argv+3,
-			components, architectures, packagetypes);
+			components, architectures, packagetypes, remove_source);
 	return result;
 }
 
-ACTION_D(y, n, y, copyfilter) {
+ACTION_D(y, n, y, copysrc) {
+	return copysrc_or_movesrc(alldistributions, architectures, components, packagetypes, argc, argv, false);
+}
+
+ACTION_D(y, n, y, movesrc) {
+	return copysrc_or_movesrc(alldistributions, architectures, components, packagetypes, argc, argv, true);
+}
+
+static retvalue copy_or_move_filter(struct distribution *alldistributions, const struct atomlist * architectures, const struct atomlist * components,
+                                    const struct atomlist * packagetypes, int argc, const char * argv[], bool remove_source) {
 	struct distribution *destination, *source;
 	retvalue result;
 
@@ -2005,8 +2080,8 @@ ACTION_D(y, n, y, copyfilter) {
 		return result;
 	if (destination->readonly) {
 		fprintf(stderr,
-"Cannot copy packages to read-only distribution '%s'.\n",
-				destination->codename);
+"Cannot %s packages to read-only distribution '%s'.\n",
+				remove_source ? "move" : "copy", destination->codename);
 		return RET_ERROR;
 	}
 	result = distribution_prepareforwriting(destination);
@@ -2014,10 +2089,19 @@ ACTION_D(y, n, y, copyfilter) {
 		return result;
 
 	return copy_by_formula(destination, source, argv[3],
-			components, architectures, packagetypes);
+			components, architectures, packagetypes, remove_source);
 }
 
-ACTION_D(y, n, y, copymatched) {
+ACTION_D(y, n, y, copyfilter) {
+	return copy_or_move_filter(alldistributions, architectures, components, packagetypes, argc, argv, false);
+}
+
+ACTION_D(y, n, y, movefilter) {
+	return copy_or_move_filter(alldistributions, architectures, components, packagetypes, argc, argv, true);
+}
+
+static retvalue copy_or_move_matched(struct distribution *alldistributions, const struct atomlist * architectures, const struct atomlist * components,
+                                     const struct atomlist * packagetypes, int argc, const char * argv[], bool remove_source) {
 	struct distribution *destination, *source;
 	retvalue result;
 
@@ -2033,8 +2117,8 @@ ACTION_D(y, n, y, copymatched) {
 		return result;
 	if (destination->readonly) {
 		fprintf(stderr,
-"Cannot copy packages to read-only distribution '%s'.\n",
-				destination->codename);
+"Cannot %s packages to read-only distribution '%s'.\n",
+				remove_source ? "move" : "copy", destination->codename);
 		return RET_ERROR;
 	}
 	result = distribution_prepareforwriting(destination);
@@ -2042,7 +2126,15 @@ ACTION_D(y, n, y, copymatched) {
 		return result;
 
 	return copy_by_glob(destination, source, argv[3],
-			components, architectures, packagetypes);
+			components, architectures, packagetypes, remove_source);
+}
+
+ACTION_D(y, n, y, copymatched) {
+	return copy_or_move_matched(alldistributions, architectures, components, packagetypes, argc, argv, false);
+}
+
+ACTION_D(y, n, y, movematched) {
+	return copy_or_move_matched(alldistributions, architectures, components, packagetypes, argc, argv, true);
 }
 
 ACTION_D(y, n, y, restore) {
@@ -2286,7 +2378,7 @@ ACTION_D(n, n, y, removetrack) {
 
 	result = tracking_remove(tracks, argv[2], argv[3]);
 
-	r = tracking_done(tracks);
+	r = tracking_done(tracks, distribution);
 	RET_ENDUPDATE(result, r);
 	return result;
 }
@@ -2377,7 +2469,7 @@ ACTION_D(n, n, y, tidytracks) {
 		}
 		r = tracking_tidyall(tracks);
 		RET_UPDATE(result, r);
-		r = tracking_done(tracks);
+		r = tracking_done(tracks, d);
 		RET_ENDUPDATE(result, r);
 		if (RET_WAS_ERROR(result))
 			break;
@@ -2413,7 +2505,7 @@ ACTION_B(n, n, y, dumptracks) {
 			continue;
 		r = tracking_printall(tracks);
 		RET_UPDATE(result, r);
-		r = tracking_done(tracks);
+		r = tracking_done(tracks, d);
 		RET_ENDUPDATE(result, r);
 		if (RET_WAS_ERROR(result))
 			break;
@@ -2524,54 +2616,56 @@ ACTION_F(y, n, y, y, reoverride) {
 /*****************retrieving Description data from .deb files***************/
 
 static retvalue repair_descriptions(struct target *target) {
-        struct package_cursor iterator;
-        retvalue result, r;
+	struct package_cursor iterator;
+	retvalue result, r;
 
-        assert(target->packages == NULL);
-	assert(target->packagetype == pt_deb || target->packagetype == pt_udeb);
+	assert(target->packages == NULL);
+	assert(target->packagetype == pt_deb ||
+			target->packagetype == pt_udeb ||
+			target->packagetype == pt_ddeb);
 
-        if (verbose > 2) {
-                printf(
+	if (verbose > 2) {
+		printf(
 "Redoing checksum information for packages in '%s'...\n",
-                                target->identifier);
-        }
+				target->identifier);
+	}
 
-        r = package_openiterator(target, READWRITE, &iterator);
-        if (!RET_IS_OK(r))
-                return r;
-        result = RET_NOTHING;
-        while (package_next(&iterator)) {
-                char *newcontrolchunk = NULL;
+	r = package_openiterator(target, READWRITE, true, &iterator);
+	if (!RET_IS_OK(r))
+		return r;
+	result = RET_NOTHING;
+	while (package_next(&iterator)) {
+		char *newcontrolchunk = NULL;
 
 		if (interrupted()) {
 			result = RET_ERROR_INTERRUPTED;
 			break;
 		}
 		/* replace it by itself to normalize the Description field */
-                r = description_addpackage(target, iterator.current.name,
+		r = description_addpackage(target, iterator.current.name,
 				iterator.current.control,
 				&newcontrolchunk);
-                RET_UPDATE(result, r);
-                if (RET_WAS_ERROR(r))
-                        break;
-                if (RET_IS_OK(r)) {
+		RET_UPDATE(result, r);
+		if (RET_WAS_ERROR(r))
+			break;
+		if (RET_IS_OK(r)) {
 			if (verbose >= 0) {
 				printf(
 "Fixing description for '%s'...\n", iterator.current.name);
 			}
 			r = package_newcontrol_by_cursor(&iterator,
-                                newcontrolchunk, strlen(newcontrolchunk));
-                        free(newcontrolchunk);
-                        if (RET_WAS_ERROR(r)) {
-                                result = r;
-                                break;
-                        }
-                        target->wasmodified = true;
-                }
-        }
-        r = package_closeiterator(&iterator);
-        RET_ENDUPDATE(result, r);
-        return result;
+				newcontrolchunk, strlen(newcontrolchunk));
+			free(newcontrolchunk);
+			if (RET_WAS_ERROR(r)) {
+				result = r;
+				break;
+			}
+			target->wasmodified = true;
+		}
+	}
+	r = package_closeiterator(&iterator);
+	RET_ENDUPDATE(result, r);
+	return result;
 }
 
 ACTION_F(y, n, y, y, repairdescriptions) {
@@ -2703,6 +2797,13 @@ ACTION_D(y, y, y, includedeb) {
 "Calling includeudeb with a -T not containing udeb makes no sense!\n");
 			return RET_ERROR;
 		}
+	} else if (strcmp(argv[0], "includeddeb") == 0) {
+		packagetype = pt_ddeb;
+		if (limitations_missed(packagetypes, pt_ddeb)) {
+			fprintf(stderr,
+"Calling includeddeb with a -T not containing ddeb makes no sense!\n");
+			return RET_ERROR;
+		}
 	} else if (strcmp(argv[0], "includedeb") == 0) {
 		packagetype = pt_deb;
 		if (limitations_missed(packagetypes, pt_deb)) {
@@ -2722,6 +2823,10 @@ ACTION_D(y, y, y, includedeb) {
 		if (packagetype == pt_udeb) {
 			if (!endswith(filename, ".udeb") && !IGNORING(extension,
 "includeudeb called with file '%s' not ending with '.udeb'\n", filename))
+				return RET_ERROR;
+		} else if (packagetype == pt_ddeb) {
+			if (!endswith(filename, ".ddeb") && !IGNORING(extension,
+"includeddeb called with file '%s' not ending with '.ddeb'\n", filename))
 				return RET_ERROR;
 		} else {
 			if (!endswith(filename, ".deb") && !IGNORING(extension,
@@ -2745,6 +2850,8 @@ ACTION_D(y, y, y, includedeb) {
 		result = override_read(distribution->udeb_override,
 				&distribution->overrides.udeb, false);
 	else
+		/* we use the normal deb overrides for ddebs too -
+		 * they're not meant to have overrides anyway */
 		result = override_read(distribution->deb_override,
 				&distribution->overrides.deb, false);
 	if (RET_WAS_ERROR(result)) {
@@ -2791,7 +2898,7 @@ ACTION_D(y, y, y, includedeb) {
 
 	distribution_unloadoverrides(distribution);
 
-	r = tracking_done(tracks);
+	r = tracking_done(tracks, distribution);
 	RET_ENDUPDATE(result, r);
 	return result;
 }
@@ -2865,7 +2972,7 @@ ACTION_D(y, y, y, includedsc) {
 	logger_wait();
 
 	distribution_unloadoverrides(distribution);
-	r = tracking_done(tracks);
+	r = tracking_done(tracks, distribution);
 	RET_ENDUPDATE(result, r);
 	return result;
 }
@@ -2920,7 +3027,7 @@ ACTION_D(y, y, y, include) {
 	}
 	result = distribution_loaduploaders(distribution);
 	if (RET_WAS_ERROR(result)) {
-		r = tracking_done(tracks);
+		r = tracking_done(tracks, distribution);
 		RET_ENDUPDATE(result, r);
 		return result;
 	}
@@ -2932,7 +3039,7 @@ ACTION_D(y, y, y, include) {
 
 	distribution_unloadoverrides(distribution);
 	distribution_unloaduploaders(distribution);
-	r = tracking_done(tracks);
+	r = tracking_done(tracks, distribution);
 	RET_ENDUPDATE(result, r);
 	return result;
 }
@@ -3779,7 +3886,7 @@ ACTION_D(y, n, y, flood) {
 		RET_UPDATE(distribution->status, result);
 
 	if (tracks != NULL) {
-		r = tracking_done(tracks);
+		r = tracking_done(tracks, distribution);
 		RET_ENDUPDATE(result, r);
 	}
 	return result;
@@ -3992,6 +4099,14 @@ static const struct action {
 		3, 3, "[-C <component> ] [-A <architecture>] [-T <packagetype>] copymatched <destination-distribution> <source-distribution> <glob>"},
 	{"copyfilter",		A_Dact(copyfilter),
 		3, 3, "[-C <component> ] [-A <architecture>] [-T <packagetype>] copyfilter <destination-distribution> <source-distribution> <formula>"},
+	{"move",		A_Dact(move),
+		3, -1, "[-C <component> ] [-A <architecture>] [-T <packagetype>] move <destination-distribution> <source-distribution> <package-names to move>"},
+	{"movesrc",		A_Dact(movesrc),
+		3, -1, "[-C <component> ] [-A <architecture>] [-T <packagetype>] movesrc <destination-distribution> <source-distribution> <source-package-name> [<source versions>]"},
+	{"movematched",		A_Dact(movematched),
+		3, 3, "[-C <component> ] [-A <architecture>] [-T <packagetype>] movematched <destination-distribution> <source-distribution> <glob>"},
+	{"movefilter",		A_Dact(movefilter),
+		3, 3, "[-C <component> ] [-A <architecture>] [-T <packagetype>] movefilter <destination-distribution> <source-distribution> <formula>"},
 	{"restore",		A_Dact(restore),
 		3, -1, "[-C <component> ] [-A <architecture>] [-T <packagetype>] restore <distribution> <snapshot-name> <package-names to restore>"},
 	{"restoresrc",		A_Dact(restoresrc),
@@ -4008,6 +4123,8 @@ static const struct action {
 		2, -1, "[--delete] includedeb <distribution> <.deb-file>"},
 	{"includeudeb",		A_Dactsp(includedeb)|NEED_DELNEW,
 		2, -1, "[--delete] includeudeb <distribution> <.udeb-file>"},
+	{"includeddeb",		A_Dactsp(includedeb)|NEED_DELNEW,
+		2, -1, "[--delete] includeddeb <distribution> <.ddeb-file>"},
 	{"includedsc",		A_Dactsp(includedsc)|NEED_DELNEW,
 		2, 2, "[--delete] includedsc <distribution> <package>"},
 	{"include",		A_Dactsp(include)|NEED_DELNEW,
@@ -4200,7 +4317,7 @@ static retvalue callaction(command_t command, const struct action *action, int a
 			if (r == RET_NOTHING) {
 				fprintf(stderr,
 "Error: Packagetype '%s' as given to --packagetype is not know.\n"
-"(only dsc, deb, udeb and combinations of those are allowed)\n",
+"(only dsc, deb, udeb, ddeb and combinations of those are allowed)\n",
 					unknownitem);
 				r = RET_ERROR;
 			}
@@ -4468,7 +4585,7 @@ static void handle_option(int c, const char *argument) {
 " -P, --priority <priority>:         Force include* to set priority.\n"
 " -C, --component <component>: 	     Add,list or delete only in component.\n"
 " -A, --architecture <architecture>: Add,list or delete only to architecture.\n"
-" -T, --type <type>:                 Add,list or delete only type (dsc,deb,udeb).\n"
+" -T, --type <type>:                 Add,list or delete only type (dsc,deb,udeb,ddeb).\n"
 "\n"
 "actions (selection, for more see manpage):\n"
 " dumpreferences:    Print all saved references\n"
@@ -4487,6 +4604,8 @@ static void handle_option(int c, const char *argument) {
 "       Include the given upload.\n"
 " includedeb <distribution> <.deb-file>\n"
 "       Include the given binary package.\n"
+" includeddeb <distribution> <.ddeb-file>\n"
+"       Include the given debug binary package.\n"
 " includeudeb <distribution> <.udeb-file>\n"
 "       Include the given installer binary package.\n"
 " includedsc <distribution> <.dsc-file>\n"

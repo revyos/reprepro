@@ -47,6 +47,7 @@ static retvalue distribution_free(struct distribution *distribution) {
 	bool needsretrack = false;
 
 	if (distribution != NULL) {
+		distribution->archive = NULL;
 		free(distribution->suite);
 		free(distribution->fakecomponentprefix);
 		free(distribution->version);
@@ -70,8 +71,10 @@ static retvalue distribution_free(struct distribution *distribution) {
 		exportmode_done(&distribution->dsc);
 		exportmode_done(&distribution->deb);
 		exportmode_done(&distribution->udeb);
+		exportmode_done(&distribution->ddeb);
 		atomlist_done(&distribution->contents_architectures);
 		atomlist_done(&distribution->contents_components);
+		atomlist_done(&distribution->contents_dcomponents);
 		atomlist_done(&distribution->contents_ucomponents);
 		override_free(distribution->overrides.deb);
 		override_free(distribution->overrides.udeb);
@@ -186,6 +189,26 @@ static retvalue createtargets(struct distribution *distribution) {
 					return r;
 
 			}
+			if (atomlist_in(&distribution->ddebcomponents, c)) {
+				r = target_initialize_dbinary(
+						distribution,
+						c, a,
+						&distribution->ddeb,
+						distribution->readonly,
+						distribution->exportoptions[deo_noexport],
+						distribution->fakecomponentprefix,
+						&t);
+				if (RET_IS_OK(r)) {
+					if (last != NULL) {
+						last->next = t;
+					} else {
+						distribution->targets = t;
+					}
+					last = t;
+				}
+				if (RET_WAS_ERROR(r))
+					return r;
+			}
 		}
 		/* check if this distribution contains source
 		 * (yes, yes, source is not really an architecture, but
@@ -223,7 +246,13 @@ CFstartparse(distribution) {
 	if (FAILEDTOALLOC(n))
 		return RET_ERROR_OOM;
 	/* set some default value: */
+	n->limit = 1;
 	r = exportmode_init(&n->udeb, true, NULL, "Packages");
+	if (RET_WAS_ERROR(r)) {
+		(void)distribution_free(n);
+		return r;
+	}
+	r = exportmode_init(&n->ddeb, true, "Release", "Packages");
 	if (RET_WAS_ERROR(r)) {
 		(void)distribution_free(n);
 		return r;
@@ -330,6 +359,9 @@ CFfinishparse(distribution) {
 	    notpropersuperset(&n->components, "Components",
 			    &n->contents_components, "ContentsComponents",
 			    atoms_components, n) ||
+	    notpropersuperset(&n->ddebcomponents, "DDebComponents",
+			    &n->contents_dcomponents, "ContentsDComponents",
+			    atoms_components, n) ||
 	    notpropersuperset(&n->udebcomponents, "UDebComponents",
 			    &n->contents_ucomponents, "ContentsUComponents",
 			    atoms_components, n) ||
@@ -337,6 +369,9 @@ CFfinishparse(distribution) {
 	    // in the rest of the code...:
 	    notpropersuperset(&n->components, "Components",
 			    &n->udebcomponents, "UDebComponents",
+			    atoms_components, n) ||
+	    notpropersuperset(&n->components, "Components",
+			    &n->ddebcomponents, "DDebComponents",
 			    atoms_components, n)) {
 		(void)distribution_free(n);
 		return RET_ERROR;
@@ -356,6 +391,14 @@ CFfinishparse(distribution) {
 			n->contents.flags.udebs = true;
 		} else {
 			n->contents.flags.udebs = false;
+		}
+	}
+	if (n->contents_dcomponents_set) {
+		if (n->contents_dcomponents.count > 0) {
+			n->contents.flags.enabled = true;
+			n->contents.flags.ddebs = true;
+		} else {
+			n->contents.flags.ddebs = false;
 		}
 	}
 	if (n->contents_architectures_set) {
@@ -401,6 +444,7 @@ CFallSETPROC(distribution, label)
 CFallSETPROC(distribution, description)
 CFallSETPROC(distribution, signed_by)
 CFsignwithSETPROC(distribution, signwith)
+CFnumberSETPROC(distribution, -1, LLONG_MAX, limit)
 CFfileSETPROC(distribution, deb_override)
 CFfileSETPROC(distribution, udeb_override)
 CFfileSETPROC(distribution, dsc_override)
@@ -412,14 +456,42 @@ CFinternatomsSETPROC(distribution, components, checkforcomponent, at_component)
 CFinternatomsSETPROC(distribution, architectures, checkforarchitecture, at_architecture)
 CFatomsublistSETPROC(distribution, contents_architectures, at_architecture, architectures, "Architectures")
 CFatomsublistSETPROC(distribution, contents_components, at_component, components, "Components")
+CFatomsublistSETPROC(distribution, ddebcomponents, at_component, components, "Components")
 CFatomsublistSETPROC(distribution, udebcomponents, at_component, components, "Components")
 CFatomsublistSETPROC(distribution, contents_ucomponents, at_component, udebcomponents, "UDebComponents")
+CFexportmodeSETPROC(distribution, ddeb)
 CFexportmodeSETPROC(distribution, udeb)
 CFexportmodeSETPROC(distribution, deb)
 CFexportmodeSETPROC(distribution, dsc)
 CFcheckvalueSETPROC(distribution, codename, checkforcodename)
 CFcheckvalueSETPROC(distribution, fakecomponentprefix, checkfordirectoryandidentifier)
 CFtimespanSETPROC(distribution, validfor)
+
+CFuSETPROC(distribution, archive) {
+	CFSETPROCVARS(distribution, data, mydata);
+	char *codename;
+	retvalue r;
+
+	r = config_getall(iter, &codename);
+	if (!RET_IS_OK(r))
+		return r;
+
+	for (struct distribution *d = mydata->distributions; d != NULL; d = d->next) {
+		if (strcmp(d->codename, codename) == 0) {
+			data->archive = d;
+			free(codename);
+			return RET_OK;
+		}
+	}
+
+	fprintf(stderr,
+"Error parsing config file %s, line %u:\n"
+"No distribution has '%s' as codename.\n"
+"Note: The archive distribution '%s' must be specified before '%s'.\n",
+		config_filename(iter), config_line(iter), codename, codename, data->codename);
+	free(codename);
+	return RET_ERROR_MISSING;
+}
 
 CFUSETPROC(distribution, Contents) {
 	CFSETPROCVAR(distribution, d);
@@ -456,6 +528,7 @@ CFUSETPROC(distribution, exportoptions) {
 static const struct configfield distributionconfigfields[] = {
 	CF("AlsoAcceptFor",	distribution,	alsoaccept),
 	CFr("Architectures",	distribution,	architectures),
+	CF("Archive",		distribution,   archive),
 	CF("ByHandHooks",	distribution,	byhandhooks),
 	CFr("Codename",		distribution,	codename),
 	CFr("Components",	distribution,	components),
@@ -463,6 +536,8 @@ static const struct configfield distributionconfigfields[] = {
 	CF("ContentsComponents", distribution,	contents_components),
 	CF("Contents",		distribution,	Contents),
 	CF("ContentsUComponents", distribution,	contents_ucomponents),
+	CF("DDebComponents",	distribution,	ddebcomponents),
+	CF("DDebIndices",	distribution,	ddeb),
 	CF("DebIndices",	distribution,	deb),
 	CF("DebOverride",	distribution,	deb_override),
 	CF("Description",	distribution,	description),
@@ -471,6 +546,7 @@ static const struct configfield distributionconfigfields[] = {
 	CF("DscOverride",	distribution,	dsc_override),
 	CF("FakeComponentPrefix", distribution,	fakecomponentprefix),
 	CF("Label",		distribution,	label),
+	CF("Limit",		distribution,   limit),
 	CF("Log",		distribution,	logger),
 	CF("NotAutomatic",	distribution,	notautomatic),
 	CF("ButAutomaticUpgrades", distribution, butautomaticupgrades),
@@ -552,7 +628,7 @@ retvalue package_foreach(struct distribution *distribution, const struct atomlis
 			if (r == RET_NOTHING)
 				continue;
 		}
-		r = package_openiterator(t, READONLY, &iterator);
+		r = package_openiterator(t, READONLY, true, &iterator);
 		RET_UPDATE(result, r);
 		if (RET_WAS_ERROR(r))
 			return result;
@@ -584,7 +660,7 @@ retvalue package_foreach_c(struct distribution *distribution, const struct atoml
 			continue;
 		if (limitation_missed(packagetype, t->packagetype))
 			continue;
-		r = package_openiterator(t, READONLY, &iterator);
+		r = package_openiterator(t, READONLY, true, &iterator);
 		RET_UPDATE(result, r);
 		if (RET_WAS_ERROR(r))
 			return result;
@@ -809,6 +885,9 @@ static retvalue export(struct distribution *distribution, bool onlyneeded) {
 	retvalue result, r;
 	struct release *release;
 
+	if (verbose >= 15)
+		fprintf(stderr, "trace: export(distribution={codename: %s}, onlyneeded=%s)\n",
+		        distribution->codename, onlyneeded ? "true" : "false");
 	assert (distribution != NULL);
 
 	if (distribution->exportoptions[deo_noexport])
@@ -906,6 +985,8 @@ retvalue distribution_exportlist(enum exportwhen when, struct distribution *dist
 	bool todo = false;
 	struct distribution *d;
 
+	if (verbose >= 15)
+		fprintf(stderr, "trace: distribution_exportlist() called.\n");
 	if (when == EXPORT_SILENT_NEVER) {
 		for (d = distributions ; d != NULL ; d = d->next) {
 			struct target *t;
@@ -937,6 +1018,13 @@ retvalue distribution_exportlist(enum exportwhen when, struct distribution *dist
 
 	result = RET_NOTHING;
 	for (d=distributions; d != NULL; d = d->next) {
+		if (verbose >= 20)
+			fprintf(stderr, " looking at distribution {codename: %s, exportoptions[deo_noexport]: %s, omitted: %s, selected: %s, status: %d}.\n",
+			        d->codename,
+			        d->exportoptions[deo_noexport] ? "true" : "false",
+			        d->omitted ? "true" : "false",
+			        d->selected ? "true" : "false",
+			        d->status);
 		if (d->exportoptions[deo_noexport])
 			continue;
 		if (d->omitted || !d->selected)
@@ -1120,7 +1208,7 @@ retvalue package_remove_each(struct distribution *distribution, const struct ato
 	for (t = distribution->targets ; t != NULL ; t = t->next) {
 		if (!target_matches(t, components, architectures, packagetypes))
 			continue;
-		r = package_openiterator(t, READWRITE, &iterator);
+		r = package_openiterator(t, READWRITE, true, &iterator);
 		RET_UPDATE(result, r);
 		if (RET_WAS_ERROR(r))
 			return result;

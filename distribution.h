@@ -52,6 +52,9 @@ struct distribution {
 	struct strlist pulls;
 	/* the key to sign with, may have no entries to mean unsigned: */
 	struct strlist signwith;
+	long long limit;
+	/* the codename of the archive distribution (when the limit is exceeded) */
+	/*@null@*/struct distribution *archive;
 	/* the override file to use by default */
 	/*@null@*/char *deb_override, *udeb_override, *dsc_override;
 	/* fake component prefix (and codename antisuffix) for Release files: */
@@ -63,8 +66,10 @@ struct distribution {
 	/* the list of components containing a debian-installer dir,
 	 * normally only "main" */
 	struct atomlist udebcomponents;
+	/* the list of components containing a debug directory */
+	struct atomlist ddebcomponents;
 	/* what kind of index files to generate */
-	struct exportmode dsc, deb, udeb;
+	struct exportmode dsc, deb, udeb, ddeb;
 	bool exportoptions[deo_COUNT];
 	/* (NONE must be 0 so it is the default) */
 	enum trackingtype { dt_NONE=0, dt_KEEP, dt_ALL, dt_MINIMAL } tracking;
@@ -76,15 +81,19 @@ struct distribution {
 		bool keepsources;
 		bool embargoalls;
 		} trackingoptions;
+	trackingdb trackingdb;
 	/* what content files to generate */
 	struct contentsoptions contents;
 	struct atomlist contents_architectures,
 		       contents_components,
+		       contents_dcomponents,
 		       contents_ucomponents;
 	bool contents_architectures_set,
 		       contents_components_set,
+		       contents_dcomponents_set,
 		       contents_ucomponents_set,
 		       /* not used, just here to keep things simpler: */
+		       ddebcomponents_set,
 		       udebcomponents_set;
 	/* A list of all targets contained in the distribution*/
 	struct target *targets;

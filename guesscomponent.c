@@ -36,10 +36,17 @@ retvalue guess_component(const char *codename, const struct atomlist *components
 	int i;
 	size_t section_len;
 
+	if (verbose >= 15) {
+		fprintf(stderr, "trace: guess_component(codename=%s, components=[", codename);
+		(void)atomlist_fprint(stderr, at_component, components);
+		fprintf(stderr, "], package=%s, section=%s, givencomponent=%s) called.\n",
+		        package, section, atoms_components[givencomponent]);
+	}
+
 	if (atom_defined(givencomponent)) {
 		if (!atomlist_in(components, givencomponent)) {
 			(void)fprintf(stderr,
-"Could not find '%s' in components of '%s': ",
+"Could not find '%s' in components of '%s': '",
 					atoms_components[givencomponent],
 					codename);
 			(void)atomlist_fprint(stderr,

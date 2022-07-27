@@ -5,10 +5,17 @@
 #include "strlist.h"
 #endif
 
-retvalue copy_by_name(struct distribution * /*into*/, struct distribution * /*from*/, int, const char **, const struct atomlist *, const struct atomlist *, const struct atomlist *);
-retvalue copy_by_source(struct distribution * /*into*/, struct distribution * /*from*/, int, const char **, const struct atomlist *, const struct atomlist *, const struct atomlist *);
-retvalue copy_by_formula(struct distribution * /*into*/, struct distribution * /*from*/, const char *formula, const struct atomlist *, const struct atomlist *, const struct atomlist *);
-retvalue copy_by_glob(struct distribution * /*into*/, struct distribution * /*from*/, const char * /*glob*/, const struct atomlist *, const struct atomlist *, const struct atomlist *);
+struct nameandversion {
+	const char *name;
+	const char /*@null@*/ *version;
+	bool warnedabout;
+	bool found;
+};
+
+retvalue copy_by_name(struct distribution * /*into*/, struct distribution * /*from*/, struct nameandversion *, const struct atomlist *, const struct atomlist *, const struct atomlist *, bool);
+retvalue copy_by_source(struct distribution * /*into*/, struct distribution * /*from*/, int, const char **, const struct atomlist *, const struct atomlist *, const struct atomlist *, bool);
+retvalue copy_by_formula(struct distribution * /*into*/, struct distribution * /*from*/, const char *formula, const struct atomlist *, const struct atomlist *, const struct atomlist *, bool);
+retvalue copy_by_glob(struct distribution * /*into*/, struct distribution * /*from*/, const char * /*glob*/, const struct atomlist *, const struct atomlist *, const struct atomlist *, bool);
 
 retvalue copy_from_file(struct distribution * /*into*/, component_t, architecture_t, packagetype_t, const char * /*filename*/ , int, const char **);
 

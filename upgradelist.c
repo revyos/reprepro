@@ -99,6 +99,10 @@ static retvalue save_package_version(struct upgradelist *upgrade, struct package
 	if (RET_WAS_ERROR(r))
 		return r;
 
+	if (verbose >= 15)
+		fprintf(stderr, "trace: save_package_version(upgrade.target={identifier: %s}, pkg={name: %s, version: %s, pkgname: %s}) called.\n",
+		        upgrade->target == NULL ? NULL : upgrade->target->identifier, pkg->name, pkg->version, pkg->pkgname);
+
 	package = zNEW(struct package_data);
 	if (FAILEDTOALLOC(package))
 		return RET_ERROR_OOM;
@@ -143,6 +147,10 @@ retvalue upgradelist_initialize(struct upgradelist **ul, struct target *t) {
 	retvalue r, r2;
 	struct package_cursor iterator;
 
+	if (verbose >= 15)
+		fprintf(stderr, "trace: upgradelist_initialize(target={identifier: %s}) called.\n",
+		        t == NULL ? NULL : t->identifier);
+
 	upgrade = zNEW(struct upgradelist);
 	if (FAILEDTOALLOC(upgrade))
 		return RET_ERROR_OOM;
@@ -151,7 +159,7 @@ retvalue upgradelist_initialize(struct upgradelist **ul, struct target *t) {
 
 	/* Beginn with the packages currently in the archive */
 
-	r = package_openiterator(t, READONLY, &iterator);
+	r = package_openiterator(t, READONLY, false, &iterator);
 	if (RET_WAS_ERROR(r)) {
 		upgradelist_free(upgrade);
 		return r;
@@ -519,7 +527,7 @@ retvalue upgradelist_pull(struct upgradelist *upgrade, struct target *source, up
 	struct package_cursor iterator;
 
 	upgrade->last = NULL;
-	r = package_openiterator(source, READONLY, &iterator);
+	r = package_openiterator(source, READONLY, true, &iterator);
 	if (RET_WAS_ERROR(r))
 		return r;
 	result = RET_NOTHING;
@@ -609,7 +617,7 @@ retvalue upgradelist_predelete(struct upgradelist *upgrade, struct logger *logge
 				r = RET_ERROR_INTERRUPTED;
 			else
 				r = target_removepackage(upgrade->target,
-						logger, pkg->name, NULL);
+						logger, pkg->name, NULL, NULL);
 			RET_UPDATE(result, r);
 			if (RET_WAS_ERROR(r))
 				break;
@@ -713,7 +721,7 @@ retvalue upgradelist_install(struct upgradelist *upgrade, struct logger *logger,
 				r = RET_ERROR_INTERRUPTED;
 			else
 				r = target_removepackage(upgrade->target,
-						logger, pkg->name, NULL);
+						logger, pkg->name, NULL, NULL);
 			RET_UPDATE(result, r);
 			if (RET_WAS_ERROR(r))
 				break;

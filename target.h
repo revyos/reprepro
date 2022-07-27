@@ -77,6 +77,7 @@ struct target {
 };
 
 retvalue target_initialize_ubinary(/*@dependant@*/struct distribution *, component_t, architecture_t, /*@dependent@*/const struct exportmode *, bool /*readonly*/, bool /*noexport*/, /*@NULL@*/const char *fakecomponentprefix, /*@out@*/struct target **);
+retvalue target_initialize_dbinary(/*@dependant@*/struct distribution *, component_t, architecture_t, /*@dependent@*/const struct exportmode *, bool /*readonly*/, bool /*noexport*/, /*@NULL@*/const char *fakecomponentprefix, /*@out@*/struct target **);
 retvalue target_initialize_binary(/*@dependant@*/struct distribution *, component_t, architecture_t, /*@dependent@*/const struct exportmode *, bool /*readonly*/, bool /*noexport*/, /*@NULL@*/const char *fakecomponentprefix, /*@out@*/struct target **);
 retvalue target_initialize_source(/*@dependant@*/struct distribution *, component_t, /*@dependent@*/const struct exportmode *, bool /*readonly*/, bool /*noexport*/, /*@NULL@*/const char *fakecomponentprefix, /*@out@*/struct target **);
 retvalue target_free(struct target *);
@@ -93,7 +94,7 @@ struct logger;
 struct description;
 retvalue target_addpackage(struct target *, /*@null@*/struct logger *, const char *name, const char *version, const char *control, const struct strlist *filekeys, bool downgrade, /*@null@*/struct trackingdata *, architecture_t, /*@null@*/const char *causingrule, /*@null@*/const char *suitefrom);
 retvalue target_checkaddpackage(struct target *, const char *name, const char *version, bool tracking, bool permitnewerold);
-retvalue target_removepackage(struct target *, /*@null@*/struct logger *, const char *name, struct trackingdata *);
+retvalue target_removepackage(struct target *, /*@null@*/struct logger *, const char *name, const char *version, struct trackingdata *);
 /* like target_removepackage, but do not read control data yourself but use available */
 retvalue target_rereference(struct target *);
 retvalue target_reoverride(struct target *, struct distribution *);
@@ -107,5 +108,19 @@ static inline bool target_matches(const struct target *t, const struct atomlist 
 	if (limitations_missed(packagetypes, t->packagetype))
 		return false;
 	return true;
+}
+
+static inline char *package_primarykey(const char *packagename, const char *version) {
+	char *key;
+
+	assert (packagename != NULL);
+	assert (version != NULL);
+	key = malloc(strlen(packagename) + 1 + strlen(version) + 1);
+	if (key != NULL) {
+		strcpy(key, packagename);
+		strcat(key, "|");
+		strcat(key, version);
+	}
+	return key;
 }
 #endif

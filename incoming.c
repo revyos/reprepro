@@ -348,7 +348,7 @@ CFSETPROC(incoming, permit) {
 	else if (strcmp(i->name, d->name) != 0)
 		return config_getflags(iter, headername, permitconstants,
 				i->permit, true,
-" (but not within the rule we are intrested in.)");
+" (but not within the rule we are interested in.)");
 	else
 		return config_getflags(iter, headername, permitconstants,
 				i->permit, false,
@@ -379,7 +379,7 @@ CFSETPROC(incoming, cleanup) {
 	else if (strcmp(i->name, d->name) != 0)
 		return config_getflags(iter, headername, cleanupconstants,
 				i->cleanup, true,
-" (but not within the rule we are intrested in.)");
+" (but not within the rule we are interested in.)");
 	else
 		return config_getflags(iter, headername, cleanupconstants,
 				i->cleanup, false,
@@ -404,7 +404,7 @@ CFSETPROC(incoming, options) {
 	else if (strcmp(i->name, d->name) != 0)
 		return config_getflags(iter, headername, optionsconstants,
 				i->options, true,
-" (but not within the rule we are intrested in.)");
+" (but not within the rule we are interested in.)");
 	else
 		return config_getflags(iter, headername, optionsconstants,
 				i->options, false,
@@ -1267,9 +1267,13 @@ static retvalue prepare_deb(const struct incoming *i, const struct candidate *c,
 	assert (file == package->master);
 	if (file->type == fe_DEB)
 		package->packagetype = pt_deb;
+	else if (file->type == fe_DDEB)
+		package->packagetype = pt_ddeb;
 	else
 		package->packagetype = pt_udeb;
 
+	/* we use the deb overrides for ddebs too - ddebs aren't
+	 * meant to have overrides so this is probably fine */
 	oinfo = override_search(file->type==fe_UDEB?into->overrides.udeb:
 			                    into->overrides.deb,
 	                        file->name);
@@ -1280,6 +1284,16 @@ static retvalue prepare_deb(const struct incoming *i, const struct candidate *c,
 	if (RET_WAS_ERROR(r))
 		return r;
 
+	if (file->type == fe_DDEB &&
+	    !atomlist_in(&into->ddebcomponents, package->component)) {
+		fprintf(stderr,
+"Cannot put file '%s' of '%s' into component '%s',\n"
+"as it is not listed in DDebComponents of '%s'!\n",
+			BASENAME(i, file->ofs), BASENAME(i, c->ofs),
+			atoms_components[package->component],
+			into->codename);
+		return RET_ERROR;
+	}
 	if (file->type == fe_UDEB &&
 	    !atomlist_in(&into->udebcomponents, package->component)) {
 		fprintf(stderr,
@@ -1702,6 +1716,7 @@ static retvalue prepare_for_distribution(const struct incoming *i, const struct 
 		switch (file->type) {
 			case fe_UDEB:
 			case fe_DEB:
+			case fe_DDEB:
 				r = prepare_deb(i, c, d, file);
 				break;
 			case fe_DSC:
@@ -1853,7 +1868,7 @@ static retvalue candidate_add_into(const struct incoming *i, const struct candid
 		r = trackingdata_summon(tracks, c->source, c->sourceversion,
 				&trackingdata);
 		if (RET_WAS_ERROR(r)) {
-			(void)tracking_done(tracks);
+			(void)tracking_done(tracks, into);
 			return r;
 		}
 		if (into->trackingoptions.needsources) {
@@ -1939,7 +1954,7 @@ static retvalue candidate_add_into(const struct incoming *i, const struct candid
 		retvalue r2;
 		r2 = trackingdata_finish(tracks, &trackingdata);
 		RET_UPDATE(r, r2);
-		r2 = tracking_done(tracks);
+		r2 = tracking_done(tracks, into);
 		RET_ENDUPDATE(r, r2);
 	}
 	return r;

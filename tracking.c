@@ -46,7 +46,7 @@ struct s_tracking {
 	struct trackingoptions options;
 };
 
-retvalue tracking_done(trackingdb db) {
+retvalue tracking_done(trackingdb db, struct distribution *distribution) {
 	retvalue r;
 
 	if (db == NULL)
@@ -55,10 +55,17 @@ retvalue tracking_done(trackingdb db) {
 	r = table_close(db->table);
 	free(db->codename);
 	free(db);
+	if (distribution->trackingdb == NULL) {
+		fprintf(stderr,
+"Internal Error: Tracking database was closed, but corresponding entry in the distribution structure %s is missing.\n",
+		       distribution->codename);
+	} else {
+		distribution->trackingdb = NULL;
+	}
 	return r;
 }
 
-retvalue tracking_initialize(/*@out@*/trackingdb *db, const struct distribution *distribution, bool readonly) {
+retvalue tracking_initialize(/*@out@*/trackingdb *db, struct distribution *distribution, bool readonly) {
 	struct s_tracking *t;
 	retvalue r;
 
@@ -80,6 +87,7 @@ retvalue tracking_initialize(/*@out@*/trackingdb *db, const struct distribution 
 		return r;
 	}
 	*db = t;
+	distribution->trackingdb = t;
 	return RET_OK;
 }
 
@@ -522,7 +530,7 @@ static retvalue tracking_recreatereferences(trackingdb t) {
 	const char *key, *value, *data;
 	size_t datalen;
 
-	r = table_newglobalcursor(t->table, &cursor);
+	r = table_newglobalcursor(t->table, true, &cursor);
 	if (!RET_IS_OK(r))
 		return r;
 
@@ -568,7 +576,7 @@ retvalue tracking_rereference(struct distribution *distribution) {
 		return result;
 	r = tracking_recreatereferences(tracks);
 	RET_UPDATE(result, r);
-	r = tracking_done(tracks);
+	r = tracking_done(tracks, distribution);
 	RET_ENDUPDATE(result, r);
 	return result;
 }
@@ -639,7 +647,7 @@ retvalue tracking_printall(trackingdb t) {
 	const char *key, *value, *data;
 	size_t datalen;
 
-	r = table_newglobalcursor(t->table, &cursor);
+	r = table_newglobalcursor(t->table, true, &cursor);
 	if (!RET_IS_OK(r))
 		return r;
 
@@ -671,9 +679,9 @@ retvalue tracking_foreach_ro(struct distribution *d, tracking_foreach_ro_action 
 	if (!RET_IS_OK(r))
 		return r;
 
-	r = table_newglobalcursor(t->table, &cursor);
+	r = table_newglobalcursor(t->table, true, &cursor);
 	if (!RET_IS_OK(r)) {
-		(void)tracking_done(t);
+		(void)tracking_done(t, d);
 		return r;
 	}
 
@@ -691,7 +699,7 @@ retvalue tracking_foreach_ro(struct distribution *d, tracking_foreach_ro_action 
 	}
 	r = cursor_close(t->table, cursor);
 	RET_ENDUPDATE(result, r);
-	r = tracking_done(t);
+	r = tracking_done(t, d);
 	RET_ENDUPDATE(result, r);
 	return result;
 }
@@ -870,7 +878,7 @@ retvalue trackingdata_insert(struct trackingdata *data, enum filetype filetype, 
 	}
 	if (r == RET_NOTHING) {
 		fprintf(stderr,
-"Could not found tracking data for %s_%s in %s to remove old files from it.\n",
+"Could not find tracking data for %s_%s in %s to remove old files from it.\n",
 			old->source, old->sourceversion,
 			data->tracks->codename);
 		return result;
@@ -889,6 +897,9 @@ retvalue trackingdata_remove(struct trackingdata *data, const char* oldsource, c
 	retvalue result, r;
 	struct trackedpackage *pkg;
 
+	if (verbose >= 15)
+		fprintf(stderr, "trace: trackingdata_remove(oldsource=%s, oldversion=%s) called.\n",
+		        oldsource, oldversion);
 	assert(oldsource != NULL && oldversion != NULL && oldfilekeys != NULL);
 	if (data->pkg != NULL &&
 			strcmp(oldversion, data->pkg->sourceversion) == 0 &&
@@ -904,7 +915,7 @@ retvalue trackingdata_remove(struct trackingdata *data, const char* oldsource, c
 	}
 	if (result == RET_NOTHING) {
 		fprintf(stderr,
-"Could not found tracking data for %s_%s in %s to remove old files from it.\n",
+"Could not find tracking data for %s_%s in %s to remove old files from it.\n",
 			oldsource, oldversion, data->tracks->codename);
 		return RET_OK;
 	}
@@ -1069,7 +1080,7 @@ retvalue tracking_tidyall(trackingdb t) {
 	const char *key, *value, *data;
 	size_t datalen;
 
-	r = table_newglobalcursor(t->table, &cursor);
+	r = table_newglobalcursor(t->table, true, &cursor);
 	if (!RET_IS_OK(r))
 		return r;
 
@@ -1102,7 +1113,7 @@ retvalue tracking_reset(trackingdb t) {
 	size_t datalen, newdatalen;
 	int i;
 
-	r = table_newglobalcursor(t->table, &cursor);
+	r = table_newglobalcursor(t->table, true, &cursor);
 	if (!RET_IS_OK(r))
 		return r;
 
@@ -1139,7 +1150,7 @@ static retvalue tracking_foreachversion(trackingdb t, struct distribution *distr
 	const char *value, *data;
 	size_t datalen;
 
-	r = table_newduplicatecursor(t->table, sourcename, &cursor,
+	r = table_newduplicatepairedcursor(t->table, sourcename, &cursor,
 			&value, &data, &datalen);
 	if (!RET_IS_OK(r))
 		return r;
@@ -1183,13 +1194,17 @@ static retvalue targetremovesourcepackage(trackingdb t, struct trackedpackage *p
 	const char *architecture = atoms_architectures[target->architecture];
 	const char *component = atoms_components[target->component];
 
+	if (verbose >= 15)
+		fprintf(stderr, "trace: targetremovesourcepackage(pkg={sourcename: %s, sourceversion: %s}, distribution.codename=%s, target.identifier=%s) called.\n",
+		        pkg->sourcename, pkg->sourceversion, distribution->codename, target->identifier);
+
 	result = RET_NOTHING;
 
 	component_len = strlen(component);
 	arch_len = strlen(architecture);
 	for (i = 0 ; i < pkg->filekeys.count ; i++) {
-		const char *s, *basefilename, *filekey = pkg->filekeys.values[i];
-		char *packagename;
+		const char *s, *s2, *basefilename, *filekey = pkg->filekeys.values[i];
+		char *packagename, *packageversion;
 		struct package package;
 		struct strlist filekeys;
 		bool savedstaletracking;
@@ -1244,9 +1259,14 @@ static retvalue targetremovesourcepackage(trackingdb t, struct trackedpackage *p
 		packagename = strndup(basefilename, s - basefilename);
 		if (FAILEDTOALLOC(packagename))
 			return RET_ERROR_OOM;
-		r = package_get(target, packagename, NULL, &package);
+		s2 = strrchr(s, '.');
+		packageversion = strndup(s + 1, s2 - s - 1);
+		if (FAILEDTOALLOC(packageversion))
+			return RET_ERROR_OOM;
+		r = package_get(target, packagename, packageversion, &package);
 		if (RET_WAS_ERROR(r)) {
 			free(packagename);
+			free(packageversion);
 			return r;
 		}
 		if (r == RET_NOTHING) {
@@ -1254,16 +1274,18 @@ static retvalue targetremovesourcepackage(trackingdb t, struct trackedpackage *p
 			    && verbose >= -1) {
 				fprintf(stderr,
 "Warning: tracking data might be inconsistent:\n"
-"cannot find '%s' in '%s', but '%s' should be there.\n",
-						packagename, target->identifier,
+"cannot find '%s=%s' in '%s', but '%s' should be there.\n",
+						packagename, packageversion, target->identifier,
 						filekey);
 			}
 			free(packagename);
+			free(packageversion);
 			continue;
 		}
 		// TODO: ugly
 		package.pkgname = packagename;
 		packagename = NULL;
+		free(packageversion);
 
 		r = package_getsource(&package);
 		assert (r != RET_NOTHING);
@@ -1330,6 +1352,10 @@ static retvalue removesourcepackage(trackingdb t, struct trackedpackage *pkg, st
 	retvalue result, r;
 	int i;
 
+	if (verbose >= 15)
+		fprintf(stderr, "trace: removesourcepackage(pkg={sourcename: %s, sourceversion: %s}, distribution={codename: %s}) called.\n",
+		        pkg->sourcename, pkg->sourceversion, distribution->codename);
+
 	result = RET_NOTHING;
 	for (target = distribution->targets ; target != NULL ;
 	                                      target = target->next) {
@@ -1369,6 +1395,10 @@ static retvalue removesourcepackage(trackingdb t, struct trackedpackage *pkg, st
 retvalue tracking_removepackages(trackingdb t, struct distribution *distribution, const char *sourcename, /*@null@*/const char *version) {
 	struct trackedpackage *pkg;
 	retvalue result, r;
+
+	if (verbose >= 15)
+		fprintf(stderr, "trace: tracking_removepackages(distribution={codename: %s}, sourcename=%s, version=%s) called.\n",
+		        distribution->codename, sourcename, version);
 
 	if (version == NULL)
 		return tracking_foreachversion(t, distribution,
@@ -1432,7 +1462,7 @@ retvalue tracking_retrack(struct distribution *d, bool needsretrack) {
 		/* now remove everything no longer needed */
 		r = tracking_tidyall(tracks);
 	}
-	rr = tracking_done(tracks);
+	rr = tracking_done(tracks, d);
 	RET_ENDUPDATE(r, rr);
 	return r;
 }

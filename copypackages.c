@@ -42,6 +42,7 @@
 struct target_package_list {
 	struct target_package_list *next;
 	struct target *target;
+	struct target *fromtarget;
 	struct selectedpackage {
 		/*@null@*/struct selectedpackage *next;
 		char *name;
@@ -59,31 +60,44 @@ struct package_list {
 	/*@null@*/struct target_package_list *targets;
 };
 
-static retvalue list_newpackage(struct package_list *list, struct target *target, const char *sourcename, const char *sourceversion, const char *packagename, const char *packageversion, /*@out@*/struct selectedpackage **package_p) {
+// cascade_strcmp compares the two strings s1 and s2. If the strings are equal, the strings
+// t1 and t2 are compared.
+static int cascade_strcmp(const char *s1, const char *s2, const char *t1, const char *t2) {
+	int result;
+
+	result = strcmp(s1, s2);
+	if (result == 0) {
+		result = strcmp(t1, t2);
+	}
+	return result;
+}
+
+static retvalue list_newpackage(struct package_list *list, struct target *desttarget, struct target *fromtarget, const char *sourcename, const char *sourceversion, const char *packagename, const char *packageversion, /*@out@*/struct selectedpackage **package_p) {
 	struct target_package_list *t, **t_p;
 	struct selectedpackage *package, **p_p;
 	int c;
 
 	t_p = &list->targets;
-	while (*t_p != NULL && (*t_p)->target != target)
+	while (*t_p != NULL && (*t_p)->target != desttarget && (*t_p)->fromtarget != fromtarget)
 		t_p = &(*t_p)->next;
 	if (*t_p == NULL) {
 		t = zNEW(struct target_package_list);
 		if (FAILEDTOALLOC(t))
 			return RET_ERROR_OOM;
-		t->target = target;
+		t->target = desttarget;
+		t->fromtarget = fromtarget;
 		t->next = *t_p;
 		*t_p = t;
 	} else
 		t = *t_p;
 
 	p_p = &t->packages;
-	while (*p_p != NULL && (c = strcmp(packagename, (*p_p)->name)) < 0)
+	while (*p_p != NULL && (c = cascade_strcmp(packagename, (*p_p)->name, packageversion, (*p_p)->version)) < 0)
 		p_p = &(*p_p)->next;
 	if (*p_p != NULL && c == 0) {
 		// TODO: improve this message..., or some context elsewhere
-		fprintf(stderr, "Multiple occurrences of package '%s'!\n",
-				packagename);
+		fprintf(stderr, "Multiple occurrences of package '%s' with version '%s'!\n",
+				packagename, packageversion);
 		return RET_ERROR_EXIST;
 	}
 	package = zNEW(struct selectedpackage);
@@ -154,12 +168,12 @@ static void list_cancelpackage(struct package_list *list, /*@only@*/struct selec
 	assert (package == NULL);
 }
 
-static retvalue list_prepareadd(struct package_list *list, struct target *target, struct package *package) {
+static retvalue list_prepareadd(struct package_list *list, struct target *desttarget, struct target *fromtarget, struct package *package) {
 	struct selectedpackage *new SETBUTNOTUSED(= NULL);
 	retvalue r;
 	int i;
 
-	assert (target->packagetype == package->target->packagetype);
+	assert (desttarget->packagetype == package->target->packagetype);
 
 	r = package_getversion(package);
 	assert (r != RET_NOTHING);
@@ -173,7 +187,7 @@ static retvalue list_prepareadd(struct package_list *list, struct target *target
 	assert (r != RET_NOTHING);
 	if (RET_WAS_ERROR(r))
 		return r;
-	r = list_newpackage(list, target,
+	r = list_newpackage(list, desttarget, fromtarget,
 			package->source, package->sourceversion,
 			package->name, package->version, &new);
 	assert (r != RET_NOTHING);
@@ -182,7 +196,7 @@ static retvalue list_prepareadd(struct package_list *list, struct target *target
 	assert (new != NULL);
 
 	new->architecture = package->architecture;
-	r = target->getinstalldata(target, package,
+	r = desttarget->getinstalldata(desttarget, package,
 			&new->control, &new->filekeys, &new->origfiles);
 	assert (r != RET_NOTHING);
 	if (RET_WAS_ERROR(r)) {
@@ -244,7 +258,7 @@ static retvalue list_prepareadd(struct package_list *list, struct target *target
 	return RET_OK;
 }
 
-static retvalue package_add(struct distribution *into, /*@null@*/trackingdb tracks, struct target *target, const struct selectedpackage *package, /*@null@*/ const char *suitefrom) {
+static retvalue package_add(struct distribution *into, /*@null@*/trackingdb tracks, struct target *target, const struct selectedpackage *package, /*@null@*/ struct distribution *from, /*@null@*/trackingdb fromtracks, struct target *fromtarget, bool remove_source) {
 	struct trackingdata trackingdata;
 	retvalue r;
 
@@ -274,26 +288,57 @@ static retvalue package_add(struct distribution *into, /*@null@*/trackingdb trac
 			(tracks != NULL)?
 			&trackingdata:NULL,
 			package->architecture,
-			NULL, suitefrom);
+			NULL, from != NULL ? from->codename : NULL);
 	RET_UPDATE(into->status, r);
+
 	if (tracks != NULL) {
 		retvalue r2;
 
 		r2 = trackingdata_finish(tracks, &trackingdata);
 		RET_ENDUPDATE(r, r2);
 	}
+
+	if (!RET_WAS_ERROR(r) && remove_source) {
+		if (fromtracks != NULL) {
+			r = trackingdata_summon(fromtracks, package->sourcename,
+					package->version, &trackingdata);
+			if (RET_WAS_ERROR(r))
+				return r;
+		}
+		r = target_removepackage(fromtarget,
+				from->logger,
+				package->name, package->version,
+				(tracks != NULL) ? &trackingdata : NULL);
+		RET_UPDATE(from->status, r);
+		if (fromtracks != NULL) {
+			retvalue r2;
+
+			r2 = trackingdata_finish(fromtracks, &trackingdata);
+			RET_ENDUPDATE(r, r2);
+		}
+	}
 	return r;
 }
 
-static retvalue packagelist_add(struct distribution *into, const struct package_list *list, /*@null@*/const char *suitefrom) {
+static retvalue packagelist_add(struct distribution *into, const struct package_list *list, /*@null@*/struct distribution *from, bool remove_source) {
 	retvalue result, r;
 	struct target_package_list *tpl;
 	struct selectedpackage *package;
-	trackingdb tracks;
+	trackingdb tracks, fromtracks = NULL;
+
+	if (verbose >= 15)
+		fprintf(stderr, "trace: packagelist_add(into.codename=%s, from.codename=%s) called.\n",
+		        into->codename, from != NULL ? from->codename : NULL);
 
 	r = distribution_prepareforwriting(into);
 	if (RET_WAS_ERROR(r))
 		return r;
+
+	if (remove_source) {
+		r = distribution_prepareforwriting(from);
+		if (RET_WAS_ERROR(r))
+			return r;
+	}
 
 	if (into->tracking != dt_NONE) {
 		r = tracking_initialize(&tracks, into, false);
@@ -302,25 +347,53 @@ static retvalue packagelist_add(struct distribution *into, const struct package_
 	} else
 		tracks = NULL;
 
+	if (from->tracking != dt_NONE) {
+		r = tracking_initialize(&fromtracks, from, false);
+		if (RET_WAS_ERROR(r))
+			return r;
+	}
+
 	result = RET_NOTHING;
 	for (tpl = list->targets; tpl != NULL ; tpl = tpl->next) {
 		struct target *target = tpl->target;
+		struct target *fromtarget = tpl->fromtarget;
+
+		if (verbose >= 15)
+			fprintf(stderr, "trace: Processing add/move from '%s' to '%s'...\n",
+			        fromtarget != NULL ? fromtarget->identifier : NULL, target->identifier);
 
 		r = target_initpackagesdb(target, READWRITE);
 		RET_ENDUPDATE(result, r);
 		if (RET_WAS_ERROR(r))
 			break;
+
+		if (remove_source) {
+			r = target_initpackagesdb(fromtarget, READWRITE);
+			RET_ENDUPDATE(result, r);
+			if (RET_WAS_ERROR(r)) {
+				(void)target_closepackagesdb(target);
+				break;
+			}
+		}
+
 		for (package = tpl->packages; package != NULL ;
 		                              package = package->next) {
 			r = package_add(into, tracks, target,
-					package, suitefrom);
+					package, from, fromtracks, fromtarget, remove_source);
 			RET_UPDATE(result, r);
+		}
+		if (remove_source) {
+			r = target_closepackagesdb(fromtarget);
+			RET_UPDATE(into->status, r);
+			RET_ENDUPDATE(result, r);
 		}
 		r = target_closepackagesdb(target);
 		RET_UPDATE(into->status, r);
 		RET_ENDUPDATE(result, r);
 	}
-	r = tracking_done(tracks);
+	r = tracking_done(fromtracks, from);
+	RET_ENDUPDATE(result, r);
+	r = tracking_done(tracks, into);
 	RET_ENDUPDATE(result, r);
 	return result;
 }
@@ -363,41 +436,48 @@ struct namelist {
 };
 
 static retvalue by_name(struct package_list *list, struct target *desttarget, struct target *fromtarget, void *data) {
-	struct namelist *d = data;
+	struct nameandversion *nameandversion = data;
+	struct nameandversion *prev;
 	retvalue result, r;
-	int i, j;
 
 	result = RET_NOTHING;
-	for (i = 0 ; i < d->argc ; i++) {
+	for (struct nameandversion *d = nameandversion; d->name != NULL ; d++) {
 		struct package package;
-		const char *name = d->argv[i];
 
-		for (j = 0 ; j < i ; j++)
-			if (strcmp(d->argv[i], d->argv[j]) == 0)
+		for (prev = nameandversion ; prev < d ; prev++) {
+			if (strcmp(prev->name, d->name) == 0 && strcmp2(prev->version, d->version) == 0)
 				break;
-		if (j < i) {
-			if (verbose >= 0 && ! d->warnedabout[j])
-				fprintf(stderr,
+		}
+		if (prev < d) {
+			if (verbose >= 0 && ! prev->warnedabout) {
+				if (d->version == NULL) {
+					fprintf(stderr,
 "Hint: '%s' was listed multiple times, ignoring all but first!\n",
-						d->argv[i]);
-			d->warnedabout[j] = true;
+							d->name);
+				} else {
+					fprintf(stderr,
+"Hint: '%s=%s' was listed multiple times, ignoring all but first!\n",
+							d->name, d->version);
+				}
+			}
+			prev->warnedabout = true;
 			/* do not complain second is missing if we ignore it: */
-			d->found[i] = true;
+			d->found = true;
 			continue;
 		}
 
-		r = package_get(fromtarget, name, NULL, &package);
+		r = package_get(fromtarget, d->name, d->version, &package);
 		if (r == RET_NOTHING)
 			continue;
 		RET_ENDUPDATE(result, r);
 		if (RET_WAS_ERROR(r))
 			break;
-		r = list_prepareadd(list, desttarget, &package);
+		r = list_prepareadd(list, desttarget, fromtarget, &package);
 		package_done(&package);
 		RET_UPDATE(result, r);
 		if (RET_WAS_ERROR(r))
 			break;
-		d->found[i] = true;
+		d->found = true;
 	}
 	return result;
 }
@@ -418,30 +498,23 @@ static void packagelist_done(struct package_list *list) {
 	}
 }
 
-retvalue copy_by_name(struct distribution *into, struct distribution *from, int argc, const char **argv, const struct atomlist *components, const struct atomlist *architectures, const struct atomlist *packagetypes) {
+retvalue copy_by_name(struct distribution *into, struct distribution *from, struct nameandversion *nameandversion, const struct atomlist *components, const struct atomlist *architectures, const struct atomlist *packagetypes, bool remove_source) {
 	struct package_list list;
-	struct namelist names = {
-		argc, argv, nzNEW(argc, bool), nzNEW(argc, bool)
-	};
 	retvalue r;
 
-	if (FAILEDTOALLOC(names.warnedabout) || FAILEDTOALLOC(names.found)) {
-		free(names.found);
-		free(names.warnedabout);
-		return RET_ERROR_OOM;
+	for (struct nameandversion *d = nameandversion; d->name != NULL; d++) {
+		d->found = false;
+		d->warnedabout = false;
 	}
 
 	memset(&list, 0, sizeof(list));
 	r = copy_by_func(&list, into, from, components,
-			architectures, packagetypes, by_name, &names);
-	free(names.warnedabout);
+			architectures, packagetypes, by_name, nameandversion);
 	if (verbose >= 0 && !RET_WAS_ERROR(r)) {
-		int i;
 		bool first = true;
 
-		assert(names.found != NULL);
-		for (i = 0 ; i < argc ; i++) {
-			if (names.found[i])
+		for (struct nameandversion *d = nameandversion; d->name != NULL; d++) {
+			if (d->found)
 				continue;
 			if (first)
 				(void)fputs(
@@ -449,17 +522,20 @@ retvalue copy_by_name(struct distribution *into, struct distribution *from, int 
 			else
 				(void)fputs(", ", stderr);
 			first = false;
-			(void)fputs(argv[i], stderr);
+			(void)fputs(d->name, stderr);
+			if (d->version != NULL) {
+				(void)fputs("=", stderr);
+				(void)fputs(d->version, stderr);
+			}
 		}
 		if (!first) {
 			(void)fputc('.', stderr);
 			(void)fputc('\n', stderr);
 		}
 	}
-	free(names.found);
 	if (!RET_IS_OK(r))
 		return r;
-	r = packagelist_add(into, &list, from->codename);
+	r = packagelist_add(into, &list, from, remove_source);
 	packagelist_done(&list);
 	return r;
 }
@@ -471,7 +547,7 @@ static retvalue by_source(struct package_list *list, struct target *desttarget, 
 
 	assert (d->argc > 0);
 
-	r = package_openiterator(fromtarget, READONLY, &iterator);
+	r = package_openiterator(fromtarget, READONLY, true, &iterator);
 	assert (r != RET_NOTHING);
 	if (!RET_IS_OK(r))
 		return r;
@@ -513,7 +589,7 @@ static retvalue by_source(struct package_list *list, struct target *desttarget, 
 				continue;
 			}
 		}
-		r = list_prepareadd(list, desttarget, &iterator.current);
+		r = list_prepareadd(list, desttarget, fromtarget, &iterator.current);
 		RET_UPDATE(result, r);
 		if (RET_WAS_ERROR(r))
 			break;
@@ -525,7 +601,7 @@ static retvalue by_source(struct package_list *list, struct target *desttarget, 
 	return result;
 }
 
-retvalue copy_by_source(struct distribution *into, struct distribution *from, int argc, const char **argv, const struct atomlist *components, const struct atomlist *architectures, const struct atomlist *packagetypes) {
+retvalue copy_by_source(struct distribution *into, struct distribution *from, int argc, const char **argv, const struct atomlist *components, const struct atomlist *architectures, const struct atomlist *packagetypes, bool remove_source) {
 	struct package_list list;
 	struct namelist names = { argc, argv, NULL, nzNEW(argc, bool) };
 	retvalue r;
@@ -599,7 +675,7 @@ retvalue copy_by_source(struct distribution *into, struct distribution *from, in
 	free(names.found);
 	if (!RET_IS_OK(r))
 		return r;
-	r = packagelist_add(into, &list, from->codename);
+	r = packagelist_add(into, &list, from, remove_source);
 	packagelist_done(&list);
 	return r;
 }
@@ -609,7 +685,7 @@ static retvalue by_formula(struct package_list *list, struct target *desttarget,
 	struct package_cursor iterator;
 	retvalue result, r;
 
-	r = package_openiterator(fromtarget, READONLY, &iterator);
+	r = package_openiterator(fromtarget, READONLY, true, &iterator);
 	assert (r != RET_NOTHING);
 	if (!RET_IS_OK(r))
 		return r;
@@ -623,7 +699,7 @@ static retvalue by_formula(struct package_list *list, struct target *desttarget,
 			result = r;
 			break;
 		}
-		r = list_prepareadd(list, desttarget, &iterator.current);
+		r = list_prepareadd(list, desttarget, fromtarget, &iterator.current);
 		RET_UPDATE(result, r);
 		if (RET_WAS_ERROR(r))
 			break;
@@ -638,7 +714,7 @@ static retvalue by_glob(struct package_list *list, struct target *desttarget, st
 	struct package_cursor iterator;
 	retvalue result, r;
 
-	r = package_openiterator(fromtarget, READONLY, &iterator);
+	r = package_openiterator(fromtarget, READONLY, true, &iterator);
 	assert (r != RET_NOTHING);
 	if (!RET_IS_OK(r))
 		return r;
@@ -646,7 +722,7 @@ static retvalue by_glob(struct package_list *list, struct target *desttarget, st
 	while (package_next(&iterator)) {
 		if (!globmatch(iterator.current.name, glob))
 			continue;
-		r = list_prepareadd(list, desttarget, &iterator.current);
+		r = list_prepareadd(list, desttarget, fromtarget, &iterator.current);
 		RET_UPDATE(result, r);
 		if (RET_WAS_ERROR(r))
 			break;
@@ -656,7 +732,7 @@ static retvalue by_glob(struct package_list *list, struct target *desttarget, st
 	return result;
 }
 
-retvalue copy_by_glob(struct distribution *into, struct distribution *from, const char *glob, const struct atomlist *components, const struct atomlist *architectures, const struct atomlist *packagetypes) {
+retvalue copy_by_glob(struct distribution *into, struct distribution *from, const char *glob, const struct atomlist *components, const struct atomlist *architectures, const struct atomlist *packagetypes, bool remove_source) {
 	struct package_list list;
 	retvalue r;
 
@@ -666,12 +742,12 @@ retvalue copy_by_glob(struct distribution *into, struct distribution *from, cons
 			packagetypes, by_glob, (void*)glob);
 	if (!RET_IS_OK(r))
 		return r;
-	r = packagelist_add(into, &list, from->codename);
+	r = packagelist_add(into, &list, from, remove_source);
 	packagelist_done(&list);
 	return r;
 }
 
-retvalue copy_by_formula(struct distribution *into, struct distribution *from, const char *filter, const struct atomlist *components, const struct atomlist *architectures, const struct atomlist *packagetypes) {
+retvalue copy_by_formula(struct distribution *into, struct distribution *from, const char *filter, const struct atomlist *components, const struct atomlist *architectures, const struct atomlist *packagetypes, bool remove_source) {
 	struct package_list list;
 	term *condition;
 	retvalue r;
@@ -687,7 +763,7 @@ retvalue copy_by_formula(struct distribution *into, struct distribution *from, c
 	term_free(condition);
 	if (!RET_IS_OK(r))
 		return r;
-	r = packagelist_add(into, &list, from->codename);
+	r = packagelist_add(into, &list, from, remove_source);
 	packagelist_done(&list);
 	return r;
 }
@@ -778,7 +854,14 @@ retvalue copy_from_file(struct distribution *into, component_t component, archit
 					into->codename,
 					atoms_architectures[architecture]);
 		}
-		if (packagetype != pt_udeb) {
+		if (packagetype == pt_ddeb) {
+			if (!atomlist_in(&into->ddebcomponents, component)) {
+				fprintf(stderr,
+"Distribution '%s' does not contain ddeb component '%s!'\n",
+					into->codename,
+					atoms_components[component]);
+			}
+		} else if (packagetype != pt_udeb) {
 			if (!atomlist_in(&into->components, component)) {
 				fprintf(stderr,
 "Distribution '%s' does not contain component '%s!'\n",
@@ -808,7 +891,7 @@ retvalue copy_from_file(struct distribution *into, component_t component, archit
 	while (indexfile_getnext(i, &package, target, false)) {
 		r = choose_by_name(&package, &d);
 		if (RET_IS_OK(r))
-			r = list_prepareadd(&list, target, &package);
+			r = list_prepareadd(&list, target, NULL, &package);
 		package_done(&package);
 		RET_UPDATE(result, r);
 		if (RET_WAS_ERROR(result))
@@ -817,7 +900,7 @@ retvalue copy_from_file(struct distribution *into, component_t component, archit
 	r = indexfile_close(i);
 	RET_ENDUPDATE(result, r);
 	if (RET_IS_OK(result))
-		result = packagelist_add(into, &list, NULL);
+		result = packagelist_add(into, &list, NULL, false);
 	packagelist_done(&list);
 	return result;
 }
@@ -830,6 +913,7 @@ static retvalue restore_from_snapshot(struct distribution *into, const struct at
 	struct target *target;
 	char *basedir;
 	enum compression compression;
+	struct distribution pseudo_from; // just stores the codename
 
 	basedir = calc_snapshotbasedir(into->codename, snapshotname);
 	if (FAILEDTOALLOC(basedir))
@@ -897,7 +981,7 @@ static retvalue restore_from_snapshot(struct distribution *into, const struct at
 			result = action(&package, d);
 			if (RET_IS_OK(result))
 				result = list_prepareadd(&list,
-						target, &package);
+						target, NULL, &package);
 			package_done(&package);
 			if (RET_WAS_ERROR(result))
 				break;
@@ -911,7 +995,9 @@ static retvalue restore_from_snapshot(struct distribution *into, const struct at
 	free(basedir);
 	if (RET_WAS_ERROR(result))
 		return result;
-	r = packagelist_add(into, &list, snapshotname);
+	memset(&pseudo_from, 0, sizeof(struct distribution));
+	pseudo_from.codename = (char*)snapshotname;
+	r = packagelist_add(into, &list, &pseudo_from, false);
 	packagelist_done(&list);
 	return r;
 }

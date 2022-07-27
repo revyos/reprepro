@@ -668,11 +668,12 @@ List the versions of the specified package in all distributions.
 .B lsbycomponent \fIpackage-name\fP
 Like ls, but group by component (and print component names).
 .TP
-.B remove \fIcodename\fP \fIpackage-names\fP
-Delete all packages in the specified distribution,
+.B remove \fIcodename\fP \fIpackage-names\fP\fR[\fP=\fIversion\fP\fR]\fP \fI...\fP
+Delete packages in the specified distribution,
 that have package name listed as argument.
-(i.e. remove all packages \fBlist\fP with the same arguments and options
-would list, except that an empty package list is not allowed.)
+Package versions must be specified by appending '\fB=\fP' and the
+version to the name (without spaces). When no version is specified, the latest
+package version is removed.
 
 Note that like any other operation removing or replacing a package,
 the old package's files are unreferenced and thus may be automatically
@@ -888,11 +889,13 @@ used files.
 Check all source package tracking information for the given distributions
 for files no longer to keep.
 .TP
-.B copy \fIdestination-codename\fP \fIsource-codename\fP \fIpackages...\fP
+.B copy \fIdestination-codename\fP \fIsource-codename\fP \fIpackage\fP\fR[\fP=\fIversion\fP\fR]\fP \fI...\fP
 Copy the given packages from one distribution to another.
 The packages are copied verbatim, no override files are consulted.
 Only components and architectures present in the source distribution are
-copied.
+copied. Package versions must be specified by appending '\fB=\fP' and the
+version to the name (without spaces). When no version is specified, the latest
+package version is copied.
 .TP
 .B copysrc \fIdestination-codename\fP \fIsource-codename\fP \fIsource-package\fP \fR[\fP\fIversions\fP\fR]\fP
 look at each package
@@ -919,6 +922,40 @@ Copy packages matching the given formula (see \fBlistfilter\fP).
 The packages are copied verbatim, no override files are consulted.
 Only components and architectures present in the source distribution are
 copied.
+.TP
+.B move \fIdestination-codename\fP \fIsource-codename\fP \fIpackage\fP\fR[\fP=\fIversion\fP\fR]\fP \fI...\fP
+Move the given packages from one distribution to another.
+The packages are moved verbatim, no override files are consulted.
+Only components and architectures present in the source distribution are
+moved. Package versions must be specified by appending '\fB=\fP' and the
+version to the name (without spaces). When no version is specified, the latest
+package version is moved.
+.TP
+.B movesrc \fIdestination-codename\fP \fIsource-codename\fP \fIsource-package\fP \fR[\fP\fIversions\fP\fR]\fP
+look at each package
+(where package means, as usual, every package be it dsc, deb or udeb)
+in the distribution specified by \fIsource-codename\fP
+and identifies the relevant source package for each.
+All packages matching the specified \fIsource-package\fP name
+(and any \fIversion\fP if specified)
+are moved to the \fIdestination-codename\fP distribution.
+The packages are moved verbatim, no override files are consulted.
+Only components and architectures present in the source distribution are
+moved.
+.TP
+.B movematched \fIdestination-codename\fP \fIsource-codename\fP \fIglob\fP
+Move packages matching the given glob (see \fBlistmatched\fP).
+
+The packages are moved verbatim, no override files are consulted.
+Only components and architectures present in the source distribution are
+moved.
+.TP
+.B movefilter \fIdestination-codename\fP \fIsource-codename\fP \fIformula\fP
+Move packages matching the given formula (see \fBlistfilter\fP).
+(all versions if no version is specified).
+The packages are moved verbatim, no override files are consulted.
+Only components and architectures present in the source distribution are
+moved.
 .TP
 .B restore \fIcodename\fP \fIsnapshot\fP \fIpackages...\fP
 .TP
@@ -1349,6 +1386,9 @@ distribution. See
 for rules which component packages are included into
 by default. This will also be copied into the Release files.
 .TP
+.B DDebComponents
+List of components containing .ddebs.
+.TP
 .B UDebComponents
 Components with a debian\-installer subhierarchy containing .udebs.
 (E.g. simply "main")
@@ -1568,6 +1608,21 @@ until no file is needed any more.
 .br
 .B needsources
 Not yet implemented.
+.TP
+.B Limit
+Limit the number of versions of a package per distribution, architecture,
+component, and type. The limit must be a number. If the number is positive,
+all old package version that exceed these limit will be removed or archived
+(see
+.B Archive
+option), when a new package version is added. If the number is zero or negative,
+all package version will be kept. By default only one package version will be
+kept.
+.TP
+.B Archive
+Specify a codename which must be declared before (to avoid loops). When packages
+exceed the version count limit (specified in \fBLimit\fR), these packages will
+be moved to the specified distribution instead of being removed.
 .TP
 .B Log
 Specify a file to log additions and removals of this distribution

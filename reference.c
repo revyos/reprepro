@@ -57,6 +57,10 @@ retvalue references_check(const char *referee, const struct strlist *filekeys) {
 retvalue references_increment(const char *needed, const char *neededby) {
 	retvalue r;
 
+	if (verbose >= 15)
+		fprintf(stderr, "trace: references_insert(needed=%s, neededby=%s) called.\n",
+		        needed, neededby);
+
 	r = table_addrecord(rdb_references, needed,
 			neededby, strlen(neededby), false);
 	if (RET_IS_OK(r) && verbose > 8)
@@ -94,6 +98,20 @@ retvalue references_insert(const char *identifier,
 		const struct strlist *files, const struct strlist *exclude) {
 	retvalue result, r;
 	int i;
+
+	if (verbose >= 15) {
+		fprintf(stderr, "trace: references_insert(identifier=%s, files=[", identifier);
+		for (i = 0 ; i < files->count ; i++) {
+			fprintf(stderr, "%s%s", i == 0 ? "" : ", ", files->values[i]);
+		}
+		fprintf(stderr, "], exclude=%s", exclude == NULL ? "NULL" : "[");
+		if (exclude != NULL) {
+			for (i = 0 ; i < exclude->count ; i++) {
+				fprintf(stderr, "%s%s", i == 0 ? "" : ", ", exclude->values[i]);
+			}
+		}
+		fprintf(stderr, "%s) called.\n", exclude == NULL ? "" : "]");
+	}
 
 	result = RET_NOTHING;
 
@@ -152,7 +170,7 @@ retvalue references_remove(const char *neededby) {
 	const char *found_to, *found_by;
 	size_t datalen, l;
 
-	r = table_newglobalcursor(rdb_references, &cursor);
+	r = table_newglobalcursor(rdb_references, true, &cursor);
 	if (!RET_IS_OK(r))
 		return r;
 
@@ -188,13 +206,13 @@ retvalue references_dump(void) {
 	retvalue result, r;
 	const char *found_to, *found_by;
 
-	r = table_newglobalcursor(rdb_references, &cursor);
+	r = table_newglobalcursor(rdb_references, true, &cursor);
 	if (!RET_IS_OK(r))
 		return r;
 
 	result = RET_OK;
-	while (cursor_nexttemp(rdb_references, cursor,
-	                               &found_to, &found_by)) {
+	while (cursor_nexttempdata(rdb_references, cursor,
+	                               &found_to, &found_by, NULL)) {
 		if (fputs(found_by, stdout) == EOF ||
 		    putchar(' ') == EOF ||
 		    puts(found_to) == EOF) {
