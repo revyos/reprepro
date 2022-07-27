@@ -1,3 +1,309 @@
+2022-07-27  Bastian Germann <bage@debian.org>
+
+	Integrate Benjamin Drung's work
+
+	* ChangeLog: Add missing entries
+	The entries are generated from git and edited manually.
+	The git changes are not in chronological order,
+	so dates can appear more than once.
+
+2021-07-20  Benjamin Drung <benjamin.drung@ionos.com>
+
+	Add trace debugging output
+
+2017-04-12  Benjamin Drung <benjamin.drung@profitbricks.com>
+
+	Accept .ddeb files as dbgsym packages
+
+2017-02-28  Benjamin Drung <benjamin.drung@profitbricks.com>
+
+	* tests/basic.sh, tests/multiversion.sh:
+	Add test cases for Archive option
+	* distribution.c, distribution.h, docs/reprepro.1, target.c:
+	Add Archive option
+
+2017-02-27  Benjamin Drung <benjamin.drung@profitbricks.com>
+
+	* tests/basic.sh, tests/multiversion.sh: Add test cases for move* commands.
+	Add test cases for the move, movesrc, movematched, movefilter commands.
+
+2017-03-30  Benjamin Drung <benjamin.drung@profitbricks.com>
+
+	* copypackages.c: package_add: Add fromtracks parameter
+
+2017-02-23  Benjamin Drung <benjamin.drung@profitbricks.com>
+
+	* copypackages.c: Add fromtarget to struct target_package_list.
+	The move commands needs access to the from target to remove the
+	packages after adding them to the destination target.
+	* copypackages.c, copypackages.h, main.c:
+	Enhance copy functions parameters to support moving
+	* database.c: Convert old database format into new format
+	* docs/reprepro.1, docs/reprepro.bash_completion, main.c: Add move* commands.
+	Add the commands move, movesrc, movematched, movefilter.
+	* copypackages.c: Implement remove source support
+
+2017-02-24  Benjamin Drung <benjamin.drung@profitbricks.com>
+
+	* database.c: Remove tracking of opened individual databases
+	* database.c: Add print_opened_tables (for debugging purposes)
+	* database.c: Keep track of all opened database tables.
+	The move command will need to open two tables at the same time (the
+	source table and the destination table). Thus keep track of all
+	opened tables.
+
+2017-04-11  Benjamin Drung <benjamin.drung@profitbricks.com>
+
+	Use database environment
+
+	* database.c: When opening multiple databases in parallel (needed for the
+	move command or the archive option), the databases needs to be configured
+	with locking. Thus an database environment is needed. Open and close
+	the database environment when getting/releasing the database lock.
+
+2018-08-27  Benjamin Drung <benjamin.drung@profitbricks.com>
+
+	* tests/multiversion.sh, tests/old-database/conf/distributions,
+	tests/old-database/db/version: Add test case for bug
+	"Database migration screws up database names"
+
+2017-02-07  Benjamin Drung <benjamin.drung@profitbricks.com>
+
+	* tests/Makefile.am, tests/basic.sh, tests/multiversion.sh,
+	tests/shunit2-helper-functions.sh: Add multiversion test
+	cases
+
+2017-02-28  Benjamin Drung <benjamin.drung@profitbricks.com>
+
+	Add Limit option
+
+	* configparser.h, distribution.c, distribution.h, docs/reprepro.1, target.c:
+	Limit the number of versions of a package per distribution,
+	architecture, component, and type. The limit must be a number. If
+	the number is positive, all old package version that exceed these
+	limit will be removed when a new package version is added. If the
+	number is zero or negative, all package version will be kept. By
+	default only one package version will be kept.
+
+2018-08-30  Benjamin Drung <benjamin.drung@profitbricks.com>
+
+	* tracking.c: Support multiple versions for removesrc command
+
+2017-02-06  Benjamin Drung <benjamin.drung@profitbricks.com>
+
+	* database.c: Support adding the same upstream tarball twice.
+	DB_DUPSORT allows duplicate keys in the database, but not
+	duplicate key/value pairs. Only if the duplicate data items are unsorted,
+	applications may store identical duplicate data items.
+	Since the references.db stores a the filekey mapping to the
+	codename|component|architecture triplet, there might be identical
+	duplicates, when upstream tarballs are references by multiple
+	version.  Therefore switch references.db from DB_DUPSORT to DB_DUP.
+	* main.c: Use nameandversion struct for remove command.
+	The multiple version support will require to pass a list of names
+	and versions to the remove_from_target() function instead of just a
+	list of names. Thus use the nameandversion struct for the remove
+	command.
+	* copypackages.c, database.c, database.h, docs/reprepro.1, main.c,
+	release.c, target.c: Add multiple version management
+
+2017-02-23  Benjamin Drung <benjamin.drung@profitbricks.com>
+
+	table_addrecord: Support non-duplicate tables
+
+	* database.c: The DB_NODUPDATA flag may only be specified if the underlying
+	database has been configured to support sorted duplicates. Thus do
+	not set the DB_NODUPDATA flag when the database does not support
+	duplicates. To avoid querying the flags on each call, save the flags
+	when opening the table.
+
+2017-02-02  Benjamin Drung <benjamin.drung@profitbricks.com>
+
+	Introduce nameandversion struct for copy command
+
+	* copypackages.c, copypackages.h, main.c:
+	The multiple version support will require to pass a list of names
+	and versions to the copy_by_name() function instead of just a list
+	of names.  Thus introduce a nameandversion struct that also holds
+	the data needed for the copy_by_name() function.
+
+2018-08-29  Benjamin Drung <benjamin.drung@profitbricks.com>
+
+	Fix "Package database is not sorted" in update command
+
+	* upgradelist.c: When multiple versions of one package are available in the archive,
+	the update command will fail:
+	```
+	Calculating packages to get...
+	Package database is not sorted!!!
+	reprepro: upgradelist.c:135: save_package_version: Assertion `false' failed.
+	Aborted
+	```
+	Fix this assertion error by iterating only over the newest version of each package.
+
+2018-08-29  Benjamin Drung <benjamin.drung@profitbricks.com>
+
+	package_openiterator: Pass through duplicate option
+
+2018-08-29  Benjamin Drung <benjamin.drung@profitbricks.com>
+
+	Add duplicate option to table_newglobalcursor
+
+	* database.c, database.h, filelist.c, files.c, main.c, reference.c,
+	sizes.c, target.c, tracking.c: Allow to open a cursor that either
+	iterates over all database entries or only over the first of each
+	duplicate (i.e. only the latest version of each package).
+
+2017-02-08  Benjamin Drung <benjamin.drung@profitbricks.com>
+
+	Support listing multiple versions in list command
+
+	* main.c: Currently only one package version is supported for each target,
+	but prepare support for multiple versions. Instead of querying only one
+	package for each target in the list command, iterate over all
+	packages with the given name for each target.
+
+2017-02-03  Benjamin Drung <benjamin.drung@profitbricks.com>
+
+	Support listing multiple versions in ls command
+
+	* main.c: Currently only one package version is supported for each target,
+	but prepare support for multiple versions. Instead of querying only one
+	package for each target in the ls command, iterate over all packages
+	with the given name for each target.
+
+2017-04-10  Benjamin Drung <benjamin.drung@profitbricks.com>
+
+	* distribution.h, tracking.c, tracking.h:
+	Remember opened tracking databases
+	* copypackages.c, incoming.c, main.c, needbuild.c, tracking.c, tracking.h:
+	Pass distribution to tracking_done.
+	For a later commit, pass the distribution to tracking_done.
+
+2017-03-28  Benjamin Drung <benjamin.drung@profitbricks.com>
+
+	package_openiterator: Support opened databases
+
+	* package.h, target.c: This change is a preparation for the
+	package_openduplicateiterator() function.
+
+2017-04-10  Benjamin Drung <benjamin.drung@profitbricks.com>
+
+	Change error handling
+
+	* target.c: Use variable 'result' only for the final returned result.
+
+2017-02-06  Benjamin Drung <benjamin.drung@profitbricks.com>
+
+	* database.c: table_close: Set default return value
+
+2017-02-02  Benjamin Drung <benjamin.drung@profitbricks.com>
+
+	* main.c: Introduce splitnameandversion().
+	The multi version support will require splitting the
+	name and version in multiple places. Thus moved the code in a
+	splitnameandversion() function.
+	* main.c, target.c, target.h, upgradelist.c:
+	target_removepackage: Support specifying package version.
+	If no package version is specfied, use the latest version.
+	* main.c: rename todo to remaining.
+	The word 'todo' is used for marking todo items for the programmer.
+	Thus use 'remaining' instead of 'todo' as variable name.
+	* database.c: Move cursor struct upwards.
+	Move cursor struct upwards to have the struct definition in one block.
+	* globals.h: Add helper function strcmp2()
+	* copypackages.c: Add helper function cascade_strcmp()
+	* target.h: Add helper function package_primarykey()
+	* database.c, error.h: Add helper function get_package_name()
+	* database.c: Add helper function debianversioncompare()
+
+2017-02-01  Benjamin Drung <benjamin.drung@profitbricks.com>
+
+	* database.c: table_getrecord: Add newline to error message
+	* database.c: table_printerror: Improve database error message
+
+2017-02-03  Benjamin Drung <benjamin.drung@profitbricks.com>
+
+	* database.c: Introduce static newcursor() function.
+	There are multiple places where new cursors are generated.
+	Remove duplicate code by introducing the newcursor() function.
+	* target.c: Print version when removing a package
+	* database.c, database.h, files.c, main.c, reference.c:
+	Merge cursor_nexttemp() into cursor_nexttempdata().
+	cursor_nexttempdata has an additional len_p output parameter (compared
+	to cursor_nexttemp). Make the len_p output parameter optional and
+	replace cursor_nexttemp by cursor_nexttempdata.
+	Thus cursor_nexttemp(...) becomes cursor_nexttempdata(..., NULL).
+	* database.c: Introduce parse_data().
+	The cursor_nextpair() function has a parse_pair() function for
+	evaluating the returned database output. Introduce a similar
+	parse_data() function for the cursor_nexttempdata() function.
+	* database.c: Introduce cursor_next().
+	The functions cursor_nexttempdata() and cursor_nextpair() share a similar logic.
+	Thus combine the duplicate code in cursor_next().
+	cursor_nexttempdata() set always DB_NEXT as cursor flag instead of
+	using the cursor->flags value. All users of cursor_nexttempdata()
+	call table_newglobalcursor() beforehand.
+	* database.c, database.h, tracking.c: rename table_newduplicatecursor.
+	Rename table_newduplicatecursor to table_newduplicatepairedcursor
+	to make use this name for a data cursor.
+	* database.c, database.h: Add helper function table_newduplicatecursor()
+	* package.h, target.c: Add helper function package_openduplicateiterator()
+
+2018-08-27  Benjamin Drung <benjamin.drung@profitbricks.com>
+
+	* guesscomponent.c: Fix missing quotation mark in component list.
+	The error message in guess_component misses a leading quotation
+	mark, for example: Could not find 'main' in components of 'bionic': contrib'
+
+2017-03-30  Benjamin Drung <benjamin.drung@profitbricks.com>
+
+	* tests/trackingcorruption.test, tracking.c:
+	Fix typo "could not found" -> "could not find"
+
+2017-02-03  Benjamin Drung <benjamin.drung@profitbricks.com>
+
+	Evaluate return value of write command
+
+	* signature.c: Compiling reprepro produces this warning:
+	```
+	signature.c: In function ‘signature_getpassphrase’:
+	signature.c:63:2: warning: ignoring return value of ‘write’, declared with attribute warn_unused_result [-Wunused-result]
+	  write(fd, p, strlen(p));
+	  ^~~~~~~~~~~~~~~~~~~~~~~
+	signature.c:64:2: warning: ignoring return  value of ‘write’, declared with attribute warn_unused_result [-Wunused-result]
+	  write(fd, "\n", 1);
+	  ^~~~~~~~~~~~~~~~~~
+	```
+
+2014-05-30  Benjamin Drung <benjamin.drung@profitbricks.com>
+
+	* main.c: Fix indentation (spaces to tabs)
+
+2017-08-22  Benjamin Drung <benjamin.drung@profitbricks.com>
+
+	Use useful names for .changes files
+
+	* tests/genpackage.sh: Use the common naming schema $source_$version_$arch.changes
+	for the name of the .changes files for testing.
+
+2017-03-28  Benjamin Drung <benjamin.drung@profitbricks.com>
+
+	* tests/genpackage.sh: Silence output
+	* tests/genpackage.sh: Use existing priority.
+	Using the non-existing priority 'superfluous' causes warning messages.
+
+2017-02-06  Benjamin Drung <benjamin.drung@profitbricks.com>
+
+	* tests/genpackage.sh: Use the host architecture by default.
+	To be able to build packages for the tests, use the host
+	architecture (to avoid requiring a cross-compiler).
+	* tests/genpackage.sh: Use dpkg-source format 3.0.
+	To test the handling of upstream tarballs,
+	switch from source format 1.0 to either 3.0 (quilt) or 3.0 (native).
+	* tests/Makefile.am, tests/basic.sh, tests/shunit2-helper-functions.sh:
+	Add basic shunit2 based tests
+
 2022-07-14  Bastian Germann <bage@debian.org>
 
 	Continue ceased upstream development
@@ -135,7 +441,7 @@
 	  from tiffany.example to pdiff.example and make it use python3.
 
 2014-06-28  Bernhard R. Link <brlink@debian.org>
-        * fix compiling without liblzma.
+	* fix compiling without liblzma.
 	* disable liblzma usage unless explicitly requested
 	  (to avoid the double-dependency to liblzma un lzma-utils).
 
@@ -144,7 +450,7 @@
 	* improve multiple_distributions description in manpage
 
 2014-06-03  Bernhard R. Link <brlink@debian.org>
-        * multiple fixes to the outsftphook example
+	* multiple fixes to the outsftphook example
 
 2014-05-10  Bernhard R. Link <brlink@debian.org>
 	* add support for linking against liblzma
@@ -445,7 +751,7 @@
 
 2010-01-27
 	* SignWith can take multiple arguments to denote multiple keys to
-          sign a repository with.
+	  sign a repository with.
 
 2010-01-22
 	* add removesrcs command (like removesrc but can get multiple
@@ -460,8 +766,8 @@
 	* fix some minor memory/resource leaks found by cppcheck
 
 2010-10-16
-       * support "ButAutomaticUpgrades" field to be copied to
-         the generated Release files (Thanks to Modestas Vainius)
+	* support "ButAutomaticUpgrades" field to be copied to
+	 the generated Release files (Thanks to Modestas Vainius)
 
 2010-10-15
 	* add support for lzip compressed files
@@ -583,6 +889,7 @@
 	* when getting packages from another architecture while updating,
 	ignore all packages with architecture not fitting into the target.
 	(Fixes a regression introduced in 3.8.0)
+
 2009-10-21
 	* reduce number of places where new compressions must be added
 	* improve checking for proper filenames in changestool's verify
@@ -1291,7 +1598,7 @@
 	  ContentsComponents/Architectures/UComponents
 	  triggers or disables contents generation if non-/empty.
 	* empty Architecturs/Components/UdebComponents in
-  	  conf/updates and conf/pulls now mean nothing instead of all.
+	  conf/updates and conf/pulls now mean nothing instead of all.
 	* minimal additional speedup when sorting filelists
 
 2007-09-21  Bernhard R. Link <brlink@debian.org>
@@ -1453,7 +1760,7 @@
 	* error/warn if trying to include a package via
 	  processincoming which is already there newer
 	* do not notify a .changes when no package included
-          (when using Log: --changes)
+	  (when using Log: --changes)
 	* add Permit: unused_files older_version
 	  and Cleanup: unused_files on_deny on_error for conf/incoming
 	* add --waitforlock option
@@ -1856,7 +2163,7 @@
 	so that is always puts the uncompressed checksums
 	in the Release file.
 	* reverting the changes from 2005-12-15
-          (i.e. again not writing uncompressed Sources
+	  (i.e. again not writing uncompressed Sources
 	   by default, as the checksum now shows up
 	   in the Release file anyway, as apt needs it)
 	* {Dsc,Deb,UDeb}Indices' external programs
@@ -1966,7 +2273,7 @@
 2005-05-31  Bernhard R. Link <brlink@debian.org>
 	* Fix bogus free causing segfaults
 	* No longer silently ignore additional arguments with include*
-	
+
 2005-05-13  Bernhard R. Link <brlink@debian.org>
 	* add Fallback option to update-methods.
 
@@ -1984,12 +2291,12 @@
 	  - split globals from error.h in globals.h
 	* fix bug in signature.c to not treat config error like valid key.
 
-2005-04-07  Bernhard R. Link <brlink@debian.org>	
+2005-04-07  Bernhard R. Link <brlink@debian.org>
 	* fix wrong handling of bugs in update specifications
 	* adopt short-howto to present
 	* fix typo in manpage
 
-2005-04-05  Bernhard R. Link <brlink@debian.org>	
+2005-04-05  Bernhard R. Link <brlink@debian.org>
 	* create files without executeable bit set
 	when copying files.
 
@@ -2023,7 +2330,7 @@
 
 	* add new command reoverride to reapply
 	overrides to all packages.
-	
+
 2005-02-20  Bernhard R. Link <brlink@debian.org>
 	* add docs/tiffany.example, which generates
 	apt-qupdate'able .diff directories.
