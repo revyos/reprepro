@@ -1,3 +1,12 @@
+reprepro (5.4.0-1) experimental; urgency=medium
+
+  * Import new upstream version 5.4.0
+    (Closes: #570623, #857302, #730572, LP: #799889)
+  * Add ISC license for new test files
+  * Run shunit2 tests on build time
+
+ -- Bastian Germann <bage@debian.org>  Wed, 27 Jul 2022 12:43:10 +0200
+
 reprepro (5.3.1-1) unstable; urgency=medium
 
   * Update debhelper-compat to level 12
