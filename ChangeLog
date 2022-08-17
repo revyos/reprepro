@@ -7,6 +7,7 @@
 	uncompressed mode rather than just retrying reading the data member.
 	* signedfile.c: Prevent duplicated keyid in signing error message
 	Reported by: Uwe Kleine-König
+	* configure.ac: Release version 5.4.1 with patches from Debian bug tracker
 
 2022-08-17  Luca Capello <luca.capello@infomaniak.com>
 
