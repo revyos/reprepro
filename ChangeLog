@@ -1,3 +1,7 @@
+2022-08-30  Bastian Germann <bage@debian.org>
+
+	Add SHA512 support (Thanks to Hu Deng)
+
 2022-08-17  Bastian Germann <bage@debian.org>
 
 	* debfilecontents.c: If data tar extraction fails try again as uncompressed
