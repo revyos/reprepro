@@ -37,7 +37,7 @@
 #include "configparser.h"
 
 const char * const changes_checksum_names[] = {
-	"Files", "Checksums-Sha1", "Checksums-Sha256"
+	"Files", "Checksums-Sha1", "Checksums-Sha256", "Checksums-Sha512"
 };
 const char * const source_checksum_names[] = {
 	"Files", "Checksums-Sha1", "Checksums-Sha256", "Checksums-Sha512"
