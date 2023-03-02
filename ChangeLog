@@ -1,3 +1,11 @@
+2023-03-01  Simon Chopin <schopin@ubuntu.com>
+
+	* uncompression.c: uncompress: close the pipe after the child exits
+
+2022-12-14  Hu Deng <hudeng@uniontech.com>
+
+	* archallflood.c, upgradelist.c: fix: redundant header file
+
 2022-08-30  Bastian Germann <bage@debian.org>
 
 	Add SHA512 support (Thanks to Hu Deng)
