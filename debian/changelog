@@ -1,3 +1,9 @@
+reprepro (1:5.4.2-1) unstable; urgency=medium
+
+  * Remove sha512 for revyos
+
+ -- Han Gao <gaohan@iscas.ac.cn>  Mon, 05 Jun 2023 07:13:04 +0000
+
 reprepro (5.4.2-1) experimental; urgency=medium
 
   * Import new upstream version 5.4.2 (LP: #2008508)
